@@ -10,7 +10,8 @@ let brainDir = home + "/brain"
 let statusPath = brainDir + "/data/status.json"
 let logPath = home + "/Library/Logs/brain-sync.log"
 let agentLabel = "com.vladilen.brain-sync"
-let syncInterval: TimeInterval = 15 * 60
+let syncInterval: TimeInterval = 15 * 60  // агент запускается в :00, :15, :30 и :45
+let batchLimit = 40  // llm.batch_limit: сколько карточек делает один прогон
 let sourceOrder: [(key: String, name: String)] = [("claude_code", "Claude Code"), ("codex", "Codex"), ("chatgpt", "ChatGPT")]
 
 let isoParser = ISO8601DateFormatter()
@@ -30,6 +31,22 @@ func ago(_ date: Date) -> String {
     if minutes < 60 { return "\(minutes) мин назад" }
     if minutes < 24 * 60 { return "\(minutes / 60) ч назад" }
     return "\(minutes / (24 * 60)) дн назад"
+}
+
+/// Ближайшая четверть часа — по ней launchd запускает brain sync.
+func nextRun(after now: Date = Date()) -> Date {
+    let cal = Calendar.current
+    let minute = cal.component(.minute, from: now)
+    let hourStart = cal.date(bySettingHour: cal.component(.hour, from: now), minute: 0, second: 0, of: now)!
+    return hourStart.addingTimeInterval(TimeInterval((minute / 15 + 1) * 15 * 60))
+}
+
+func plural(_ n: Int, _ one: String, _ few: String, _ many: String) -> String {
+    let a = n % 100, b = n % 10
+    if a > 10 && a < 20 { return many }
+    if b == 1 { return one }
+    if b > 1 && b < 5 { return few }
+    return many
 }
 
 func shorten(_ text: String, _ limit: Int) -> String {
@@ -125,7 +142,7 @@ final class BrainBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 suffix = " !"
                 tip = "Второй мозг: давно не было синхронизации"
             } else {
-                tip = "Второй мозг: всё синхронизировано" + (pending > 0 ? ", ждут пересказа \(pending)" : "")
+                tip = "Второй мозг: всё синхронизировано" + (pending > 0 ? ", без карточки ещё \(pending)" : "")
             }
         }
         button.title = prefix + suffix
@@ -143,7 +160,10 @@ final class BrainBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
         case "error": return "Последний прогон завершился ошибкой"
         case "interrupted": return "Последний прогон прервался"
         case "none": return "Синхронизация ещё не запускалась"
-        default: return pending > 0 ? "Работает · ждут пересказа \(pending)" : "Работает · всё пересказано"
+        default:
+            return pending > 0
+                ? "Работает · \(pending) \(plural(pending, "разговор", "разговора", "разговоров")) ещё без карточки"
+                : "Работает · у всех разговоров есть карточки"
         }
     }
 
@@ -175,9 +195,7 @@ final class BrainBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if let last = lastSync {
             menu.addItem(.separator())
             info("Последняя синхронизация в \(clockFormatter.string(from: last)), \(ago(last))")
-            let next = last.addingTimeInterval(syncInterval)
-            info(next > Date() ? "Следующая примерно в \(clockFormatter.string(from: next))"
-                               : "Следующая — в ближайшие минуты")
+            info("Следующая в \(clockFormatter.string(from: nextRun()))")
             if stale { info("⚠︎ Давно не синхронизировалось — загляни в лог") }
         }
 
@@ -191,7 +209,15 @@ final class BrainBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 total += records
                 info("\(name): \(records), с карточкой \(s["summarized"] as? Int ?? 0)")
             }
-            info("Всего \(total) · ждут пересказа \(pending)")
+            info("Всего \(total) · \(pending) без карточки")
+            if pending > 0 {
+                // Карточка — краткое содержание, ключевые слова и атомы от модели. Без неё ищется только сырой текст.
+                let runs = (pending + batchLimit - 1) / batchLimit
+                info(runs == 1
+                     ? "Карточки сделает синхронизация в \(clockFormatter.string(from: nextRun()))"
+                     : "Карточки сделают ближайшие \(runs) \(plural(runs, "синхронизация", "синхронизации", "синхронизаций"))")
+                info("Пока они ищутся только по тексту разговора")
+            }
         }
         for e in status["sync_errors"] as? [[String: Any]] ?? [] {
             info("⚠︎ \(e["source"] as? String ?? ""): \(shorten(e["error"] as? String ?? "", 70))")

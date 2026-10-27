@@ -214,7 +214,7 @@ code { font: 400 13px var(--font-mono); padding: 1px 4px; border-radius: var(--r
     <div class="card table-wrap">
       <table>
         <thead><tr>
-          <th>Источник</th><th class="n">Записей</th><th class="n">С карточкой</th><th class="n">Ждут</th>
+          <th>Источник</th><th class="n">Записей</th><th class="n">С карточкой</th><th class="n">Без карточки</th>
           <th class="n">Ещё идут</th><th class="n">Пропущено</th><th>Последний разговор</th><th>Синхронизация</th>
         </tr></thead>
         <tbody id="sources"></tbody>
@@ -341,7 +341,9 @@ $("#db-path").textContent = DATA.db_path.replace(/^\/Users\/[^/]+/, "~");
   const items = [
     ["Разговоров", n(total), bySource],
     ["С карточкой", n(carded), `${pct}% базы`, pct],
-    ["Ждут пересказа", n(pending), pending ? `≈ ${n(runs)} ${plural(runs, "прогон", "прогона", "прогонов")} по ${DATA.batch_limit}, это около ${Math.max(1, Math.round(runs * 15 / 60))} ч` : "очередь пуста"],
+    ["Без карточки", n(pending), pending
+      ? `Пока ищутся только по тексту. Карточки сделает ${runs === 1 ? "следующая синхронизация" : `ближайшие ${n(runs)} ${plural(runs, "синхронизация", "синхронизации", "синхронизаций")}`} (каждые 15 минут, до ${DATA.batch_limit} за раз)`
+      : "у всех разговоров есть карточки"],
     ["Ошибки", n(failed + syncErrors.length), failed || syncErrors.length
       ? [failed && `${n(failed)} не удалось пересказать`, syncErrors.length && `${syncErrors.length} в источниках`].filter(Boolean).join(", ")
       : "ни одной"],
@@ -518,7 +520,7 @@ function seg(el, key, options) {
   });
 }
 seg($("#f-source"), "source", [["all", "Все"], ...SOURCES]);
-seg($("#f-status"), "status", [["all", "Любые"], ["card", "С карточкой"], ["wait", "Ждут"], ["err", "Ошибка"]]);
+seg($("#f-status"), "status", [["all", "Любые"], ["card", "С карточкой"], ["wait", "Без карточки"], ["err", "Ошибка"]]);
 $("#q").addEventListener("input", (e) => { filters.q = e.target.value; renderRecords(); });
 
 function statusTag(r) {

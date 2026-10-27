@@ -16,12 +16,16 @@
         <key>PYTHONUNBUFFERED</key>
         <string>1</string>
     </dict>
-    <key>StartInterval</key>
-    <integer>900</integer>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>ProcessType</key>
-    <string>Background</string>
+    <!-- По часам: :00, :15, :30, :45. StartInterval с ProcessType Background
+         macOS откладывала на десятки минут. Если Mac спал, пропущенный запуск
+         выполнится при пробуждении. -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict><key>Minute</key><integer>0</integer></dict>
+        <dict><key>Minute</key><integer>15</integer></dict>
+        <dict><key>Minute</key><integer>30</integer></dict>
+        <dict><key>Minute</key><integer>45</integer></dict>
+    </array>
     <key>LowPriorityIO</key>
     <true/>
     <key>Nice</key>

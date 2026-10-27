@@ -87,7 +87,9 @@ codex mcp remove brain            # отключить в Codex
 
 ## Автозапуск
 
-`brain sync` раз в 15 минут через launchd, лог — `~/Library/Logs/brain-sync.log`.
+`brain sync` через launchd по часам — в :00, :15, :30 и :45 (если Mac спал, пропущенный запуск
+выполнится при пробуждении), лог — `~/Library/Logs/brain-sync.log`. Не `StartInterval` и не
+`ProcessType: Background`: с ними macOS откладывала запуски на десятки минут.
 Проект лежит в `~/brain`, а не в «Документах»: macOS не пускает фоновые задачи launchd
 в защищённые папки (Документы, Рабочий стол, Загрузки) — там агент падает с «Operation not permitted».
 

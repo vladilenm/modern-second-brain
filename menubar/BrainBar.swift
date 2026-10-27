@@ -12,7 +12,16 @@ let logPath = home + "/Library/Logs/brain-sync.log"
 let agentLabel = "com.vladilen.brain-sync"
 let syncInterval: TimeInterval = 15 * 60  // агент запускается в :00, :15, :30 и :45
 let batchLimit = 40  // llm.batch_limit: сколько карточек делает один прогон
-let sourceOrder: [(key: String, name: String)] = [("claude_code", "Claude Code"), ("codex", "Codex"), ("chatgpt", "ChatGPT")]
+let builtinSources: [(key: String, name: String)] = [("claude_code", "Claude Code"), ("codex", "Codex"), ("chatgpt", "ChatGPT")]
+
+/// Список источников пишет brain в status.json (sources_meta); встроенный — на случай старого файла.
+func sourceOrder(_ status: [String: Any]) -> [(key: String, name: String)] {
+    guard let meta = status["sources_meta"] as? [[String: Any]], !meta.isEmpty else { return builtinSources }
+    return meta.compactMap { m -> (key: String, name: String)? in
+        guard let key = m["source"] as? String else { return nil }
+        return (key: key, name: m["title"] as? String ?? key)
+    }
+}
 
 let isoParser = ISO8601DateFormatter()
 let clockFormatter: DateFormatter = {
@@ -203,7 +212,7 @@ final class BrainBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if !sources.isEmpty {
             menu.addItem(.separator())
             var total = 0
-            for (key, name) in sourceOrder {
+            for (key, name) in sourceOrder(status) {
                 guard let s = sources[key] else { continue }
                 let records = s["records"] as? Int ?? 0
                 total += records

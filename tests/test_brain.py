@@ -268,6 +268,9 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual([r["title"] for r in data["records"]], ["Обычный", "Опасное </script><b>название"])
         self.assertEqual(data["state"], "none")
         self.assertFalse(data["records"][0]["card"])
+        self.assertEqual([m["source"] for m in data["sources_meta"]], list(connectors.source_names()))
+        self.assertEqual(sorted(data["files_seen"]), ["claude_code", "codex"])
+        self.assertEqual(sorted(data["sync"]), sorted(connectors.source_names()))
 
 
 class SyncTests(unittest.TestCase):
@@ -380,6 +383,7 @@ class SummarizeTests(unittest.TestCase):
             self.assertEqual(final["sources"]["codex"], {"records": 2, "summarized": 2,
                                                          "latest": "2026-10-21T00:00:00Z"})
             self.assertEqual([r["title"] for r in final["recent"]], ["Настройка поиска"] * 2)
+            self.assertEqual([m["source"] for m in final["sources_meta"]], list(connectors.source_names()))
         finally:
             server.shutdown()
             server.server_close()

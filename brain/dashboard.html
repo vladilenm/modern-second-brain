@@ -269,7 +269,8 @@ code { font: 400 13px var(--font-mono); padding: 1px 4px; border-radius: var(--r
 <script>
 const DATA = /*__DATA__*/null;
 
-const SOURCES = [["claude_code", "Claude Code"], ["codex", "Codex"], ["chatgpt", "ChatGPT"]];
+const META = Object.fromEntries(DATA.sources_meta.map((s) => [s.source, s]));
+const SOURCES = DATA.sources_meta.map((s) => [s.source, s.title]);
 const SOURCE_NAME = Object.fromEntries(SOURCES);
 const ATOM_NAME = { decision: "решение", fix: "исправление", error: "ошибка", command: "команда", fact: "факт", todo: "задача" };
 const WEEKS = 26;
@@ -364,17 +365,17 @@ $("#db-path").textContent = DATA.db_path.replace(/^\/Users\/[^/]+/, "~");
     const cards = rs.filter((r) => r.card).length;
     const latest = rs.length ? date(rs[0].updated_at) : null;
     const s = DATA.sync[key];
-    const seen = DATA.files_seen[key] || 0;
-    const service = key === "chatgpt" ? null : Math.max(0, seen - rs.length);
+    const seen = DATA.files_seen[key];
+    const service = seen === undefined ? null : Math.max(0, seen - rs.length);
     let sync;
     if (!s) sync = `<span class="tag">не запускалась</span>`;
     else if (s.last_error) sync = `<span class="tag err">ошибка</span> <span class="muted">${esc(s.last_error)}</span>`;
     else sync = `<span class="tag ok">ок</span> <span class="muted">${esc(ago(date(s.last_success_at)))}</span>`;
-    if (key === "chatgpt" && !rs.length) {
-      return `<tr><td>${name}</td><td colspan="6" class="muted">Пока пусто. Сделай экспорт в ChatGPT (Settings → Data controls → Export data) и положи архив в <code>~/brain/inbox</code>.</td><td>${sync}</td></tr>`;
+    if (META[key].hint && !rs.length) {
+      return `<tr><td>${esc(name)}</td><td colspan="6" class="muted">${esc(META[key].hint)}</td><td>${sync}</td></tr>`;
     }
     return `<tr>
-      <td>${name}</td>
+      <td>${esc(name)}</td>
       <td class="n">${n(rs.length)}</td>
       <td class="n">${n(cards)}</td>
       <td class="n">${n(rs.length - cards)}</td>

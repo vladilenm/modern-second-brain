@@ -10,12 +10,11 @@ import os
 import sqlite3
 from pathlib import Path
 
-from . import status as status_mod
+from . import connectors, status as status_mod
 from .timeutil import now_iso
 
 TEMPLATE = Path(__file__).with_name("dashboard.html")
 PREVIEW_CHARS = 6000
-SYNC_NAMES = {"claude_code": "claude_code", "codex": "codex", "chatgpt": "chatgpt_export"}
 
 
 def _lines(text):
@@ -31,17 +30,14 @@ def _alive(pid) -> bool:
 
 
 def _files_seen(conn: sqlite3.Connection, cfg: dict) -> dict:
-    """Сколько файлов источника уже просмотрено: разница с числом записей — служебные сессии без разговора."""
-    roots = {
-        "claude_code": cfg["sources"]["claude_code"].get("roots", []),
-        "codex": cfg["sources"]["codex"].get("roots", []),
-        "chatgpt": [cfg["inbox"]],
-    }
+    """Сколько файлов источника уже просмотрено: разница с числом записей — служебные сессии без разговора.
+    Считаем только там, где один файл — одна запись."""
     paths = [r["path"] for r in conn.execute("SELECT path FROM file_state")]
     out = {}
-    for source, dirs in roots.items():
-        prefixes = [str(Path(d).expanduser()) + "/" for d in dirs]
-        out[source] = sum(1 for p in paths if p.startswith(tuple(prefixes)))
+    for cls in connectors.ALL.values():
+        if issubclass(cls, connectors.FileConnector) and cls.one_record_per_file:
+            prefixes = tuple(d.rstrip("/") + "/" for d in cls(cfg).roots())
+            out[cls.source] = sum(1 for p in paths if prefixes and p.startswith(prefixes))
     return out
 
 
@@ -76,14 +72,16 @@ def collect(conn: sqlite3.Connection, cfg: dict) -> dict:
             "body_len": r["body_len"],
         })
     sync = {row["source"]: dict(row) for row in conn.execute("SELECT * FROM sync_state")}
+    last_sync = st.get("last_sync") or {}
+    meta = connectors.registry()
     return {
         "generated_at": now_iso(),
         "db_path": cfg["db_path"],
         "state": state,
         "status": st,
-        "sync": {source: sync.get(name) for source, name in SYNC_NAMES.items()},
-        "waiting": {source: ((st.get("last_sync") or {}).get(name) or {}).get("waiting", 0)
-                    for source, name in SYNC_NAMES.items()},
+        "sources_meta": meta,
+        "sync": {m["source"]: sync.get(m["connector"]) for m in meta},
+        "waiting": {m["source"]: (last_sync.get(m["connector"]) or {}).get("waiting", 0) for m in meta},
         "files_seen": _files_seen(conn, cfg),
         "batch_limit": int(cfg["llm"].get("batch_limit", 40)),
         "preview_chars": PREVIEW_CHARS,

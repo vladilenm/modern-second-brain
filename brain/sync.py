@@ -1,12 +1,21 @@
-"""Синхронизация: прогоняет коннекторы и складывает новое в базу."""
+"""Синхронизация: прогоняет коннекторы и складывает новое в базу.
+
+Файловые источники перечитываются по mtime и размеру файла, API-источники — с сохранённого курсора.
+У каждого источника своё расписание (every_minutes), а launchd запускает sync раз в 15 минут.
+"""
 from __future__ import annotations
 
 import os
 import sqlite3
 import time
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 from . import connectors, db
+from .timeutil import parse
+
+# launchd стартует в :00, :15, :30 и :45, а прогон длится минуты: без запаса
+# источник «раз в час» срабатывал бы раз в час с четвертью.
+GRACE_SECONDS = 5 * 60
 
 
 def excluded_prefixes(cfg: dict) -> List[str]:
@@ -29,9 +38,101 @@ def purge_excluded(conn: sqlite3.Connection, prefixes: List[str]) -> int:
     return len(ids)
 
 
+def purge_connector(conn: sqlite3.Connection, connector) -> int:
+    """То же для правила самого коннектора (например, exclude_repos у GitHub)."""
+    ids = [r["id"] for r in conn.execute(
+        "SELECT id, project FROM records WHERE source = ? AND project IS NOT NULL", (connector.source,))
+        if connector.excludes(r["project"])]
+    db.delete_records(conn, ids)
+    conn.commit()
+    return len(ids)
+
+
+def seconds_left(conn: sqlite3.Connection, connector, now: float) -> float:
+    """Сколько ждать до следующего запуска источника; 0 — пора."""
+    if connector.every_seconds <= 0:
+        return 0.0
+    row = conn.execute("SELECT last_run_at FROM sync_state WHERE source = ?", (connector.name,)).fetchone()
+    last = parse(row["last_run_at"]) if row else None
+    if last is None:
+        return 0.0
+    left = connector.every_seconds - (now - last.timestamp())
+    return 0.0 if left <= GRACE_SECONDS else left
+
+
+def _skip(rec, connector, prefixes: List[str]) -> bool:
+    return is_excluded(rec.project, prefixes) or connector.excludes(rec.project)
+
+
+def _counts() -> dict:
+    return {"new": 0, "changed": 0, "waiting": 0, "errors": 0, "excluded": 0}
+
+
+def _sync_files(conn: sqlite3.Connection, connector, prefixes: List[str], rescan: bool,
+                now: float) -> Tuple[dict, Optional[str]]:
+    counts = _counts()
+    last_error = None
+    for path in connector.files():
+        try:
+            st = path.stat()
+        except OSError:
+            continue
+        if now - st.st_mtime < connector.idle_seconds:
+            counts["waiting"] += 1  # разговор ещё идёт, заберём в следующий раз
+            continue
+        key = str(path)
+        if not rescan and db.get_file_state(conn, key) == (st.st_mtime, st.st_size):
+            continue
+        try:
+            for rec in connector.parse(path):
+                if _skip(rec, connector, prefixes):
+                    counts["excluded"] += 1
+                    continue
+                status = db.upsert(conn, rec)
+                counts["new"] += status == "new"
+                counts["changed"] += status == "changed"
+            db.set_file_state(conn, key, st.st_mtime, st.st_size)
+            conn.commit()
+        except Exception as exc:  # один битый файл не должен ронять весь источник
+            conn.rollback()
+            counts["errors"] += 1
+            last_error = f"{path.name}: {exc}"
+    error = f"ошибок в файлах: {counts['errors']}, последняя — {last_error}" if last_error else None
+    return counts, error
+
+
+def _sync_api(conn: sqlite3.Connection, connector, prefixes: List[str],
+              rescan: bool) -> Tuple[dict, Optional[str]]:
+    counts = _counts()
+    if rescan:
+        db.reset_cursor(conn, connector.name)
+        conn.commit()
+    try:
+        for batch in connector.fetch(db.get_cursor(conn, connector.name)):
+            new = changed = excluded = 0
+            for rec in batch.records:
+                if _skip(rec, connector, prefixes):
+                    excluded += 1
+                    continue
+                status = db.upsert(conn, rec)
+                new += status == "new"
+                changed += status == "changed"
+            db.set_cursor(conn, connector.name, batch.cursor)
+            conn.commit()
+            counts["new"] += new
+            counts["changed"] += changed
+            counts["excluded"] += excluded
+    except Exception as exc:  # курсор остаётся на последней записанной пачке
+        conn.rollback()
+        counts["errors"] += 1
+        return counts, str(exc) if isinstance(exc, RuntimeError) else f"{type(exc).__name__}: {exc}"
+    return counts, None
+
+
 def sync(cfg: dict, conn: sqlite3.Connection, only: Optional[str] = None,
          log: Callable[[str], None] = print, rescan: bool = False) -> Dict[str, dict]:
-    """rescan=True перечитывает все файлы (нужно после правки коннектора);
+    """only — один источник, без оглядки на расписание. rescan=True забирает всё заново
+    (файлы — целиком, API — с начала, сбросив курсор) и тоже не ждёт расписания;
     неизменившиеся записи всё равно отсекаются по хешу."""
     now = time.time()
     totals = {}
@@ -40,40 +141,22 @@ def sync(cfg: dict, conn: sqlite3.Connection, only: Optional[str] = None,
     if removed:
         log(f"удалено записей из исключённых проектов: {removed}")
     for connector in connectors.enabled(cfg, only):
-        new = changed = waiting = errors = excluded = 0
-        last_error = None
-        for path in connector.files():
-            try:
-                st = path.stat()
-            except OSError:
-                continue
-            if now - st.st_mtime < connector.idle_seconds:
-                waiting += 1  # разговор ещё идёт, заберём в следующий раз
-                continue
-            key = str(path)
-            if not rescan and db.get_file_state(conn, key) == (st.st_mtime, st.st_size):
-                continue
-            try:
-                for rec in connector.parse(path):
-                    if is_excluded(rec.project, prefixes):
-                        excluded += 1
-                        continue
-                    status = db.upsert(conn, rec)
-                    new += status == "new"
-                    changed += status == "changed"
-                db.set_file_state(conn, key, st.st_mtime, st.st_size)
-                conn.commit()
-            except Exception as exc:  # один битый файл не должен ронять весь источник
-                conn.rollback()
-                errors += 1
-                last_error = f"{path.name}: {exc}"
-        error = f"ошибок в файлах: {errors}, последняя — {last_error}" if errors else None
-        db.record_run(conn, connector.name, error, new, changed)
+        left = 0.0 if (only or rescan) else seconds_left(conn, connector, now)
+        if left:
+            log(f"{connector.name}: рано, следующий запуск через {int(left // 60) + 1} мин")
+            continue
+        removed = purge_connector(conn, connector)
+        if removed:
+            log(f"{connector.name}: удалено исключённых записей: {removed}")
+        if isinstance(connector, connectors.ApiConnector):
+            counts, error = _sync_api(conn, connector, prefixes, rescan)
+        else:
+            counts, error = _sync_files(conn, connector, prefixes, rescan, now)
+        db.record_run(conn, connector.name, error, counts["new"], counts["changed"])
         conn.commit()
-        totals[connector.name] = {"new": new, "changed": changed, "waiting": waiting, "errors": errors,
-                                  "excluded": excluded}
-        log(f"{connector.name}: новых {new}, изменённых {changed}, ждут тишины {waiting}, "
-            f"исключено {excluded}, ошибок {errors}")
-        if last_error:
-            log(f"  последняя ошибка: {last_error}")
+        totals[connector.name] = counts
+        log(f"{connector.name}: новых {counts['new']}, изменённых {counts['changed']}, "
+            f"ждут тишины {counts['waiting']}, исключено {counts['excluded']}, ошибок {counts['errors']}")
+        if error:
+            log(f"  {error}")
     return totals

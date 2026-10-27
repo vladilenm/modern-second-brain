@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from typing import Dict, List
 
-from .base import Connector, FileConnector
+from .base import ApiConnector, Batch, Connector, FileConnector
 from .chatgpt_export import ChatGPTExportConnector
 from .claude_code import ClaudeCodeConnector
 from .codex import CodexConnector

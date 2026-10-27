@@ -27,6 +27,13 @@ class Record:
     kind: str = "dialog"  # dialog | discussion | changelog | document — от него зависит промпт пересказа
 
 
+@dataclass
+class Batch:
+    """Пачка записей API-коннектора и позиция, до которой всё в ней уже отдано."""
+    records: List[Record]
+    cursor: str
+
+
 class Connector:
     """Общее у всех коннекторов: ключ настроек, источник записей и как его показывать людям."""
 
@@ -35,10 +42,20 @@ class Connector:
     title = ""       # название для людей: «Claude Code», «GitHub»
     about = ""       # что лежит в источнике — для описания MCP-сервера
     empty_hint = ""  # что сделать, если записей пока нет; панель показывает это вместо пустой строки
+    default_every_minutes = 0  # 0 — в каждом прогоне sync
 
     def __init__(self, cfg: dict):
         self.cfg = cfg
         self.settings = cfg["sources"].get(self.name, {})
+
+    @property
+    def every_seconds(self) -> float:
+        """Как часто запускать источник (every_minutes в config)."""
+        return float(self.settings.get("every_minutes", self.default_every_minutes)) * 60
+
+    def excludes(self, project: Optional[str]) -> bool:
+        """Своё правило исключения записей сверх общего exclude_projects."""
+        return False
 
 
 class FileConnector(Connector):
@@ -65,6 +82,25 @@ class FileConnector(Connector):
         raise NotImplementedError
 
     def parse(self, path: Path) -> List[Record]:
+        raise NotImplementedError
+
+
+class ApiConnector(Connector):
+    """Коннектор к источнику за API: отвечает «что нового после курсора» пачками.
+
+    Формат курсора знает только сам коннектор. sync хранит его в базе и сдвигает
+    в одном коммите с записями пачки: упали посреди — записанное остаётся,
+    следующий прогон продолжит с последней записанной пачки.
+    """
+
+    default_every_minutes = 60
+
+    @property
+    def backfill_days(self) -> int:
+        """На сколько дней назад забирать при первом запуске."""
+        return int(self.settings.get("backfill_days", 730))
+
+    def fetch(self, cursor: Optional[str]) -> Iterator[Batch]:
         raise NotImplementedError
 
 

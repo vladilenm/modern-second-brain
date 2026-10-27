@@ -22,7 +22,7 @@ from brain import config, db, status, summarize  # noqa: E402
 from brain import connectors  # noqa: E402
 from brain import search as search_mod  # noqa: E402
 from brain import sync as sync_mod  # noqa: E402
-from brain.connectors.base import Record  # noqa: E402
+from brain.connectors.base import ApiConnector, Batch, Record  # noqa: E402
 from brain.connectors.chatgpt_export import ChatGPTExportConnector  # noqa: E402
 from brain.connectors.claude_code import ClaudeCodeConnector  # noqa: E402
 from brain.connectors.codex import CodexConnector  # noqa: E402
@@ -308,6 +308,89 @@ class ExcludeTests(unittest.TestCase):
         self.assertEqual((totals["new"], totals["excluded"]), (0, 1))
         self.assertEqual([r[0] for r in conn.execute("SELECT external_id FROM records")], ["keep"])
         self.assertEqual(conn.execute("SELECT COUNT(*) FROM records_fts").fetchone()[0], 1)
+
+
+class FakeApi(ApiConnector):
+    """API-источник для тестов: отдаёт заранее заданные пачки после курсора."""
+    name = source = "fake"
+    title = "Фейк"
+    about = "тестовые записи"
+    pages: list = []    # [(records, cursor) или исключение]
+    cursors: list = []  # с какими курсорами звали fetch
+
+    def fetch(self, cursor):
+        FakeApi.cursors.append(cursor)
+        for item in FakeApi.pages:
+            if isinstance(item, Exception):
+                raise item
+            records, position = item
+            if cursor is None or position > cursor:
+                yield Batch(records, position)
+
+    def excludes(self, project):
+        return project == "скрытый"
+
+
+class ApiSyncTests(unittest.TestCase):
+    def setUp(self):
+        self.cfg = make_cfg(Path(tempfile.mkdtemp()))
+        self.cfg["sources"]["fake"] = {"enabled": True, "every_minutes": 60}
+        self.conn = db.connect(self.cfg["db_path"])
+        connectors.ALL["fake"] = FakeApi
+        self.addCleanup(connectors.ALL.pop, "fake")
+        FakeApi.pages, FakeApi.cursors = [], []
+
+    def rec(self, ext, project=None):
+        return Record("fake", ext, f"запись {ext}", f"текст {ext}", "2026-10-01T00:00:00Z",
+                      project=project, kind="document")
+
+    def run_sync(self, **kw):
+        return sync_mod.sync(self.cfg, self.conn, log=lambda *_: None, **kw).get("fake")
+
+    def test_cursor_moves_only_with_saved_batch(self):
+        FakeApi.pages = [([self.rec("1")], "1"), ([self.rec("2")], "2"), RuntimeError("сеть упала")]
+        totals = self.run_sync(only="fake")
+        self.assertEqual((totals["new"], totals["errors"]), (2, 1))
+        self.assertEqual(db.get_cursor(self.conn, "fake"), "2")
+        state = self.conn.execute("SELECT last_error FROM sync_state WHERE source = 'fake'").fetchone()
+        self.assertEqual(state["last_error"], "сеть упала")
+        FakeApi.pages = [([self.rec("1")], "1"), ([self.rec("2")], "2"), ([self.rec("3")], "3")]
+        totals = self.run_sync(only="fake")
+        self.assertEqual(FakeApi.cursors[-1], "2")
+        self.assertEqual((totals["new"], totals["errors"]), (1, 0))
+        kind = self.conn.execute("SELECT kind FROM records WHERE external_id = '3'").fetchone()[0]
+        self.assertEqual(kind, "document")
+
+    def test_broken_batch_leaves_nothing_behind(self):
+        bad = self.rec("плохая")
+        bad.body = None  # upsert упадёт на этой записи
+        FakeApi.pages = [([self.rec("1")], "1"), ([self.rec("2"), bad], "2")]
+        totals = self.run_sync(only="fake")
+        self.assertEqual([r[0] for r in self.conn.execute("SELECT external_id FROM records")], ["1"])
+        self.assertEqual(db.get_cursor(self.conn, "fake"), "1")
+        self.assertEqual((totals["new"], totals["errors"]), (1, 1))
+
+    def test_schedule_skips_until_due(self):
+        FakeApi.pages = [([self.rec("1")], "1")]
+        self.assertEqual(self.run_sync()["new"], 1)
+        self.assertIsNone(self.run_sync())                 # рано: прошло меньше часа
+        self.assertIsNotNone(self.run_sync(only="fake"))   # --source запускает сразу
+        self.conn.execute("UPDATE sync_state SET last_run_at = '2000-01-01T00:00:00Z' WHERE source = 'fake'")
+        self.assertIsNotNone(self.run_sync())
+
+    def test_rescan_starts_from_scratch(self):
+        FakeApi.pages = [([self.rec("1")], "1")]
+        self.run_sync()
+        totals = self.run_sync(rescan=True)  # и расписание не мешает
+        self.assertIsNone(FakeApi.cursors[-1])
+        self.assertEqual((totals["new"], totals["changed"]), (0, 0))
+
+    def test_connector_exclusion_skips_and_purges(self):
+        db.upsert(self.conn, self.rec("старая", project="скрытый"))
+        FakeApi.pages = [([self.rec("1", project="скрытый"), self.rec("2", project="открытый")], "1")]
+        totals = self.run_sync(only="fake")
+        self.assertEqual(totals["excluded"], 1)
+        self.assertEqual([r[0] for r in self.conn.execute("SELECT external_id FROM records")], ["2"])
 
 
 class FakeLLM(http.server.BaseHTTPRequestHandler):

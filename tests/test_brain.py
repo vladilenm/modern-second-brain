@@ -6,6 +6,7 @@ import copy
 import http.server
 import json
 import os
+import socket
 import sqlite3
 import subprocess
 import sys
@@ -620,6 +621,8 @@ class GitHubRepoTests(GitHubCase):
         self.assertEqual((third["new"], third["changed"]), (0, 1))  # пересобран только октябрь
         [since] = [p["since"][0] for path, p, _ in FakeGitHub.hits if path == "/repos/vm/brain/commits"]
         self.assertEqual(since, "2026-10-01T00:00:00Z")
+        self.assertEqual([p["author"] for path, p, _ in FakeGitHub.hits if path == "/repos/vm/brain/commits"],
+                         [["vm"]])
         body = self.conn.execute(
             "SELECT body FROM records WHERE external_id = 'commits:vm/brain:2026-10'").fetchone()[0]
         self.assertIn("ddd4444 Панель базы", body)
@@ -635,9 +638,38 @@ class GitHubRepoTests(GitHubCase):
         FakeGitHub.routes["/repos/vm/brain/commits"] = 500
         totals = self.sync()
         self.assertEqual((totals["new"], totals["errors"]), (2, 1))
-        self.assertEqual(json.loads(db.get_cursor(self.conn, "github"))["issues"], "2026-10-12T00:00:00Z")
+        cursor = json.loads(db.get_cursor(self.conn, "github"))
+        self.assertEqual(cursor["issues"], "2026-10-12T00:00:00Z")
+        self.assertEqual(cursor["repos"], "2026-10-19T00:00:00Z")  # vm/empty пройден, на vm/brain остановились
         error = self.conn.execute("SELECT last_error FROM sync_state WHERE source = 'github'").fetchone()[0]
         self.assertIn("HTTP 500", error)
+        self.assertIn("vm/brain", error)  # в ошибке сказано, какой репозиторий мешает
+        self.assertIn("exclude_repos", error)
+
+    def test_interrupted_pass_keeps_month_floor(self):
+        self.sync()  # полный прогон: курсор repos = 2026-10-20, граница месяца снята
+        FakeGitHub.routes["/user/repos"] = [gh_repo("vm/aaa", pushed_at="2026-11-01T00:00:00Z"),
+                                            gh_repo(pushed_at="2026-11-02T00:00:00Z")]
+        FakeGitHub.routes["/repos/vm/aaa/commits"] = [gh_commit("2026-11-01T10:00:00Z", "eee5555", "Ноябрь")]
+        FakeGitHub.routes["/repos/vm/brain/commits"] = 500  # прогон оборвётся на втором репозитории
+        self.assertEqual(self.sync()["errors"], 1)
+        cursor = json.loads(db.get_cursor(self.conn, "github"))
+        self.assertEqual((cursor["repos"], cursor["repos_since"]),
+                         ("2026-11-01T00:00:00Z", "2026-10-01T00:00:00Z"))
+        FakeGitHub.routes["/repos/vm/brain/commits"] = gh_repo_routes()["/repos/vm/brain/commits"]
+        FakeGitHub.hits.clear()
+        self.assertEqual(self.sync()["errors"], 0)
+        [since] = [p["since"][0] for path, p, _ in FakeGitHub.hits if path == "/repos/vm/brain/commits"]
+        self.assertEqual(since, "2026-10-01T00:00:00Z")  # октябрьские коммиты догнаны, а не потеряны
+        self.assertNotIn("repos_since", json.loads(db.get_cursor(self.conn, "github")))
+
+    def test_no_connection(self):
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]  # порт свободен: на нём никто не слушает
+        self.cfg["sources"]["github"]["api_base"] = f"http://127.0.0.1:{port}"
+        with self.assertRaisesRegex(RuntimeError, "нет связи"):
+            self.fetch()
 
 
 class FakeLLM(http.server.BaseHTTPRequestHandler):

@@ -37,6 +37,10 @@ class NotFound(Exception):
     """404 или 409: README нет или репозиторий пустой — не ошибка, просто нет записи."""
 
 
+class Fatal(RuntimeError):
+    """Нет доступа или исчерпан лимит — дальше в этом прогоне идти бессмысленно."""
+
+
 def gh_token_command() -> List[str]:
     path = shutil.which("gh") or next((p for p in GH_FALLBACKS if os.path.exists(p)), None)
     if not path:
@@ -88,10 +92,13 @@ class GitHubAPI:
             if exc.code in (404, 409):
                 raise NotFound(url) from None
             if exc.code == 401:
-                raise RuntimeError("GitHub: нет доступа, выполни gh auth login") from None
+                raise Fatal("GitHub: нет доступа, выполни gh auth login") from None
             if exc.code == 429 or (exc.code == 403 and exc.headers.get("X-RateLimit-Remaining") == "0"):
-                raise RuntimeError("GitHub: исчерпан лимит запросов, продолжим в следующий прогон") from None
+                raise Fatal("GitHub: исчерпан лимит запросов, продолжим в следующий прогон") from None
             raise RuntimeError(f"GitHub: HTTP {exc.code} на {url}") from None
+        except (urllib.error.URLError, OSError) as exc:
+            # нет сети, таймаут, обрыв соединения
+            raise RuntimeError(f"GitHub: нет связи ({getattr(exc, 'reason', exc)})") from None
 
     def _url(self, path: str, params: Optional[dict] = None) -> str:
         return self.base + path + ("?" + urllib.parse.urlencode(params) if params else "")
@@ -199,17 +206,28 @@ class GitHubConnector(ApiConnector):
 
     def _repos(self, api: GitHubAPI, login: str, pos: dict) -> Iterator[Batch]:
         """Репозитории, в которые пушили после курсора, по одному на пачку: их месяцы коммитов и README."""
-        since = month_start(pos["repos"])  # месяцы начиная с месяца курсора собираем заново целиком
+        # Пока проход по репозиториям не закончен, нижняя граница хранится в курсоре: оборвался
+        # посередине — следующий прогон доберёт остальные репозитории с того же месяца.
+        since = pos.get("repos_since") or month_start(pos["repos"])  # месяцы собираем заново целиком
+        pos["repos_since"] = since
         repos = [r for r in api.items("/user/repos", {"affiliation": "owner,collaborator,organization_member"})
                  if not r.get("fork") and (r.get("pushed_at") or "") >= pos["repos"]
                  and not self.excludes(r["full_name"])]
         for repo in sorted(repos, key=lambda r: r["pushed_at"]):
-            records = self._commit_months(api, login, repo, since)
-            readme = self._readme(api, repo)
+            try:
+                records = self._commit_months(api, login, repo, since)
+                readme = self._readme(api, repo)
+            except Fatal:
+                raise
+            except RuntimeError as exc:
+                raise RuntimeError(f"{exc} — репозиторий {repo['full_name']}; "
+                                   "если ошибка повторяется, добавь его в exclude_repos") from None
             if readme:
                 records.append(readme)
             pos["repos"] = repo["pushed_at"]
             yield Batch(records, json.dumps(pos, sort_keys=True))
+        pos.pop("repos_since")
+        yield Batch([], json.dumps(pos, sort_keys=True))  # проход закончен — граница снова от курсора
 
     def _commit_months(self, api: GitHubAPI, login: str, repo: dict, since: str) -> List[Record]:
         name = repo["full_name"]

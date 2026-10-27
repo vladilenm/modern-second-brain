@@ -116,7 +116,8 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("sync", help="забрать новое из источников и пересказать")
     s.add_argument("--source", help="только один источник: " + ", ".join(connectors.ALL))
     s.add_argument("--no-summarize", action="store_true", help="без пересказа")
-    s.add_argument("--rescan", action="store_true", help="перечитать все файлы (после правки коннектора)")
+    s.add_argument("--rescan", action="store_true",
+                   help="забрать всё заново: файлы — целиком, API-источники — с начала (после правки коннектора)")
     s.add_argument("--limit", type=int, help="сколько записей пересказать за запуск")
     s.set_defaults(func=cmd_sync)
 

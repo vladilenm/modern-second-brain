@@ -16,6 +16,7 @@
   "sources": {
     "claude_code": {"enabled": true},
     "codex": {"enabled": true},
-    "chatgpt_export": {"enabled": true}
+    "chatgpt_export": {"enabled": true},
+    "github": {"enabled": true, "every_minutes": 60, "backfill_days": 730, "exclude_repos": []}
   }
 }

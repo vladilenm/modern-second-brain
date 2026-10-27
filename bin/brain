@@ -1,0 +1,4 @@
+#!/bin/sh
+# brain sync | search "запрос" | show ID | status | summarize | mcp
+DIR="$(cd "$(dirname "$0")/.." && pwd)"
+PYTHONPATH="$DIR${PYTHONPATH:+:$PYTHONPATH}" exec /usr/bin/python3 -m brain.cli "$@"

@@ -1,0 +1,21 @@
+{
+  "llm": {
+    "base_url": "https://openrouter.ai/api/v1",
+    "api_key": "ВСТАВЬ_КЛЮЧ",
+    "model": "название-модели",
+    "json_mode": true,
+    "batch_limit": 40
+  },
+  "exclude_projects": [
+    "~/Documents/dev/автоматический-бот"
+  ],
+  "search": {
+    "half_life_days": 120,
+    "recency_weight": 0.35
+  },
+  "sources": {
+    "claude_code": {"enabled": true},
+    "codex": {"enabled": true},
+    "chatgpt_export": {"enabled": true}
+  }
+}

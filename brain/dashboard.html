@@ -1,0 +1,614 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Второй мозг · база</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&family=Spectral:ital,wght@0,300;0,400;0,500;1,300;1,400&display=swap" rel="stylesheet">
+<style>
+/* Токены — из дизайн-системы Владилена Минина 1.0.0 (exports/tokens.css), только используемые. */
+:root {
+  --font-display: 'Spectral', 'Iowan Old Style', Georgia, serif;
+  --font-body: 'Golos Text', 'Segoe UI', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px; --space-5: 24px;
+  --space-6: 32px; --space-7: 48px; --space-8: 64px;
+  --radius-sm: 4px; --radius-md: 6px; --radius-lg: 10px; --radius-full: 9999px;
+  --control-sm: 32px; --control-md: 40px;
+  --duration-fast: 120ms; --duration-base: 200ms; --duration-slow: 320ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-enter: cubic-bezier(0.05, 0.7, 0.1, 1);
+  --content-max: 1120px;
+  --color-bg: #F7F6FA; --color-surface: #FFFFFF; --color-surface-sunken: #EFEDF4;
+  --color-line: #E2DFEA; --color-line-strong: #8F889D;
+  --color-ink: #16121E; --color-ink-muted: #565062; --color-ink-subtle: #6B6578;
+  --color-accent: #7C3AED; --color-accent-hover: #6A2BD8; --color-on-accent: #FFFFFF;
+  --color-accent-soft: #EDE6FF; --color-accent-text: #6A2BD8;
+  --color-success: #1E7A4C; --color-success-soft: #E3F3EA;
+  --color-warning: #8F5B00; --color-warning-soft: #FBEFD9;
+  --color-danger: #B3261E; --color-danger-soft: #FBE6E4;
+  --shadow-2: 0 4px 16px rgba(22, 18, 30, 0.08);
+  --shadow-3: 0 16px 40px rgba(22, 18, 30, 0.12);
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --color-bg: #0E0B14; --color-surface: #17131F; --color-surface-sunken: #120F19;
+    --color-line: #2B2537; --color-line-strong: #6A617E;
+    --color-ink: #F5F3FA; --color-ink-muted: #B6AFC4; --color-ink-subtle: #8F889D;
+    --color-accent: #A78BFA; --color-accent-hover: #BBA4FC; --color-on-accent: #160E2B;
+    --color-accent-soft: #261C3D; --color-accent-text: #B79CFF;
+    --color-success: #5CC98F; --color-success-soft: #13291E;
+    --color-warning: #E5AE45; --color-warning-soft: #2D2312;
+    --color-danger: #F27D78; --color-danger-soft: #33171A;
+    --shadow-2: 0 4px 16px rgba(0, 0, 0, 0.45);
+    --shadow-3: 0 16px 40px rgba(0, 0, 0, 0.55);
+    color-scheme: dark;
+  }
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--color-bg); color: var(--color-ink);
+  font: 400 16px/1.6 var(--font-body);
+  -webkit-font-smoothing: antialiased;
+}
+.page { max-width: var(--content-max); margin: 0 auto; padding: var(--space-7) var(--space-6) var(--space-8); }
+@media (max-width: 640px) { .page { padding: var(--space-6) var(--space-4) var(--space-7); } }
+
+.label {
+  margin: 0 0 var(--space-3); font: 500 12px/1.4 var(--font-mono);
+  letter-spacing: 0.06em; text-transform: uppercase; color: var(--color-ink-muted);
+}
+h1 {
+  margin: 0; font: 300 64px/1.05 var(--font-display); letter-spacing: -0.02em; text-wrap: balance;
+}
+@media (max-width: 640px) { h1 { font-size: 40px; } }
+.lede { margin: var(--space-4) 0 0; max-width: 65ch; font-size: 18px; color: var(--color-ink-muted); }
+.lede b { color: var(--color-ink); font-weight: 500; }
+section { margin-top: var(--space-8); }
+@media (max-width: 640px) { section { margin-top: var(--space-7); } }
+.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+.card {
+  background: var(--color-surface); border: 1px solid var(--color-line);
+  border-radius: var(--radius-lg); padding: var(--space-5);
+}
+.card-head { display: flex; justify-content: space-between; align-items: baseline; gap: var(--space-4); flex-wrap: wrap; }
+.card-title { margin: 0; font: 600 20px/1.35 var(--font-body); }
+.card-sub { margin: var(--space-1) 0 0; font-size: 14px; color: var(--color-ink-muted); }
+
+/* Плитки */
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--space-4); }
+.tile .value {
+  margin: var(--space-2) 0 var(--space-1);
+  font: 300 48px/1.05 var(--font-display); letter-spacing: -0.02em; font-variant-numeric: tabular-nums;
+}
+.tile .note { margin: 0; font-size: 14px; line-height: 1.55; color: var(--color-ink-muted); }
+.bar { height: 6px; margin-top: var(--space-3); background: var(--color-surface-sunken); border-radius: var(--radius-full); overflow: hidden; }
+.bar > span { display: block; height: 100%; background: var(--color-accent); border-radius: var(--radius-full); }
+
+/* Таблицы */
+.table-wrap { padding: 0; overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; line-height: 1.55; }
+th {
+  text-align: left; padding: var(--space-3) var(--space-4); white-space: nowrap;
+  font: 500 12px/1.4 var(--font-mono); letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--color-ink-muted); border-bottom: 1px solid var(--color-line);
+}
+td { padding: var(--space-3) var(--space-4); border-bottom: 1px solid var(--color-line); vertical-align: top; }
+tbody tr:last-child td { border-bottom: 0; }
+td.n, th.n { text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.muted { color: var(--color-ink-muted); }
+.subtle { color: var(--color-ink-subtle); }
+.mono { font-family: var(--font-mono); font-size: 13px; }
+.clickable { cursor: pointer; transition: background var(--duration-fast) var(--ease-standard); }
+.clickable:hover { background: var(--color-surface-sunken); }
+.clickable:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
+
+.tag {
+  display: inline-block; padding: 3px 8px; border-radius: var(--radius-sm); white-space: nowrap;
+  font: 500 12px/1.4 var(--font-mono); letter-spacing: 0.06em; text-transform: uppercase;
+  background: var(--color-surface-sunken); color: var(--color-ink-muted);
+}
+.tag.ok { background: var(--color-success-soft); color: var(--color-success); }
+.tag.wait { background: var(--color-warning-soft); color: var(--color-warning); }
+.tag.err { background: var(--color-danger-soft); color: var(--color-danger); }
+
+.inline-bar { height: 6px; min-width: 2px; background: var(--color-line-strong); border-radius: var(--radius-full); }
+
+/* График */
+.chart { position: relative; margin-top: var(--space-5); height: 240px; }
+.chart svg { display: block; width: 100%; height: 100%; overflow: visible; }
+.chart .grid { stroke: var(--color-line); stroke-width: 1; }
+.chart .axis { fill: var(--color-ink-subtle); font: 400 12px var(--font-mono); }
+.chart .mark { fill: var(--color-accent); transition: fill var(--duration-fast) var(--ease-standard); }
+.chart .hit { fill: transparent; cursor: default; }
+.chart .slot.on .mark { fill: var(--color-accent-hover); }
+.chart .value-label { fill: var(--color-ink); font: 500 12px var(--font-mono); }
+.tooltip {
+  position: fixed; z-index: 30; pointer-events: none; padding: 10px 14px; border-radius: var(--radius-md);
+  background: var(--color-ink); color: var(--color-bg); font-size: 14px; line-height: 1.45; box-shadow: var(--shadow-2);
+}
+.tooltip .num { font-weight: 500; }
+
+/* Фильтры */
+.filters { display: flex; flex-wrap: wrap; gap: var(--space-3); align-items: center; margin-bottom: var(--space-4); }
+input[type=search] {
+  flex: 1 1 280px; height: var(--control-md); padding: 0 12px; min-width: 0;
+  font: 400 16px var(--font-body); color: var(--color-ink);
+  background: var(--color-surface); border: 1px solid var(--color-line-strong); border-radius: var(--radius-md);
+}
+input[type=search]::placeholder { color: var(--color-ink-subtle); }
+input[type=search]:focus { outline: none; border-color: var(--color-accent); box-shadow: 0 0 0 2px var(--color-accent-soft); }
+.seg { display: inline-flex; padding: 3px; gap: 2px; background: var(--color-surface-sunken); border-radius: var(--radius-md); }
+.seg button {
+  height: 34px; padding: 0 12px; border: 0; border-radius: var(--radius-sm); cursor: pointer;
+  font: 500 14px var(--font-body); color: var(--color-ink-muted); background: transparent;
+  transition: background var(--duration-fast) var(--ease-standard), color var(--duration-fast) var(--ease-standard);
+}
+.seg button:hover { color: var(--color-ink); }
+.seg button[aria-pressed=true] { background: var(--color-surface); color: var(--color-ink); box-shadow: 0 1px 2px rgba(22,18,30,.06); }
+.seg button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
+.count { margin: 0 0 var(--space-3); font-size: 14px; color: var(--color-ink-muted); }
+.records td.title { min-width: 280px; }
+.records .t { font-weight: 500; }
+.records .s { margin-top: 2px; color: var(--color-ink-muted); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.empty { padding: var(--space-6); text-align: center; color: var(--color-ink-muted); }
+
+/* Карточка записи */
+.scrim { position: fixed; inset: 0; z-index: 20; background: rgba(14, 11, 20, 0.32); }
+.drawer {
+  position: fixed; z-index: 21; top: 0; right: 0; bottom: 0; width: min(620px, 100vw); overflow-y: auto;
+  background: var(--color-surface); border-left: 1px solid var(--color-line); box-shadow: var(--shadow-3);
+  padding: var(--space-6) var(--space-6) var(--space-7);
+  animation: slide var(--duration-slow) var(--ease-enter);
+}
+@keyframes slide { from { transform: translateX(24px); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .drawer { animation: none; } * { transition: none !important; } }
+@media (max-width: 640px) { .drawer { padding: var(--space-5) var(--space-4) var(--space-6); } }
+.drawer h2 { margin: 0 0 var(--space-3); font: 400 28px/1.25 var(--font-display); letter-spacing: -0.005em; text-wrap: balance; }
+.drawer h3 { margin: var(--space-6) 0 var(--space-2); }
+.drawer p { margin: 0; }
+.drawer ul { margin: 0; padding-left: 0; list-style: none; }
+.drawer li { padding: var(--space-2) 0; border-bottom: 1px solid var(--color-line); font-size: 14px; }
+.drawer li:last-child { border-bottom: 0; }
+.drawer li .tag { margin-right: var(--space-2); }
+.meta { display: grid; grid-template-columns: max-content 1fr; gap: var(--space-1) var(--space-4); font-size: 14px; }
+.meta dt { color: var(--color-ink-muted); }
+.meta dd { margin: 0; overflow-wrap: anywhere; }
+.notice { margin-top: var(--space-4); padding: var(--space-3) var(--space-4); border-radius: var(--radius-md); font-size: 14px; }
+.notice.wait { background: var(--color-warning-soft); color: var(--color-warning); }
+.notice.err { background: var(--color-danger-soft); color: var(--color-danger); }
+pre.transcript {
+  margin: 0; padding: var(--space-4); max-height: 480px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
+  font: 400 13px/1.6 var(--font-mono); background: var(--color-surface-sunken); border-radius: var(--radius-md);
+}
+.close {
+  position: sticky; top: 0; float: right; height: var(--control-md); padding: 0 12px; margin: calc(-1 * var(--space-2)) calc(-1 * var(--space-3)) 0 var(--space-3);
+  border: 0; border-radius: var(--radius-md); background: transparent; cursor: pointer;
+  font: 500 15px var(--font-body); color: var(--color-accent-text);
+}
+.close:hover { background: var(--color-accent-soft); }
+code { font: 400 13px var(--font-mono); padding: 1px 4px; border-radius: var(--radius-sm); background: var(--color-surface-sunken); }
+</style>
+</head>
+<body>
+<main class="page">
+  <header>
+    <p class="label">Второй мозг · <span id="db-path"></span></p>
+    <h1>Что лежит в базе</h1>
+    <p class="lede" id="lede"></p>
+  </header>
+
+  <section aria-labelledby="s1">
+    <p class="label" id="s1">01 / Сводка</p>
+    <div class="tiles" id="tiles"></div>
+  </section>
+
+  <section aria-labelledby="s2">
+    <p class="label" id="s2">02 / Источники</p>
+    <div class="card table-wrap">
+      <table>
+        <thead><tr>
+          <th>Источник</th><th class="n">Записей</th><th class="n">С карточкой</th><th class="n">Ждут</th>
+          <th class="n">Ещё идут</th><th class="n">Пропущено</th><th>Последний разговор</th><th>Синхронизация</th>
+        </tr></thead>
+        <tbody id="sources"></tbody>
+      </table>
+    </div>
+    <p class="card-sub">«Ещё идут» — разговоры, где меньше 30 минут назад что-то происходило: их заберёт одна из следующих синхронизаций. «Пропущено» — файлы, которые в базу не попадают: без твоих сообщений (фоновые и технические сессии) и из проектов, исключённых в <code>exclude_projects</code> в config.json.</p>
+  </section>
+
+  <section aria-labelledby="s3">
+    <p class="label" id="s3">03 / Активность</p>
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h2 class="card-title">Разговоры по неделям</h2>
+          <p class="card-sub" id="chart-sub"></p>
+        </div>
+      </div>
+      <div class="chart" id="chart" role="img"></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="s4">
+    <p class="label" id="s4">04 / Проекты</p>
+    <div class="card table-wrap">
+      <table>
+        <thead><tr><th>Проект</th><th class="n">Разговоров</th><th style="width:30%"></th><th class="n">С карточкой</th><th>Последний</th></tr></thead>
+        <tbody id="projects"></tbody>
+      </table>
+    </div>
+    <p class="card-sub">Нажми на проект, чтобы увидеть его разговоры ниже.</p>
+  </section>
+
+  <section aria-labelledby="s5" id="records-section">
+    <p class="label" id="s5">05 / Записи</p>
+    <div class="filters">
+      <input type="search" id="q" placeholder="Название, проект, ключевые слова, краткое содержание" aria-label="Фильтр записей">
+      <div class="seg" id="f-source" role="group" aria-label="Источник"></div>
+      <div class="seg" id="f-status" role="group" aria-label="Статус"></div>
+    </div>
+    <p class="count" id="count"></p>
+    <div class="card table-wrap">
+      <table class="records">
+        <thead><tr><th>Дата</th><th>Источник</th><th>Разговор</th><th>Проект</th><th>Карточка</th></tr></thead>
+        <tbody id="records"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<div class="tooltip" id="tip" hidden></div>
+
+<script>
+const DATA = /*__DATA__*/null;
+
+const SOURCES = [["claude_code", "Claude Code"], ["codex", "Codex"], ["chatgpt", "ChatGPT"]];
+const SOURCE_NAME = Object.fromEntries(SOURCES);
+const ATOM_NAME = { decision: "решение", fix: "исправление", error: "ошибка", command: "команда", fact: "факт", todo: "задача" };
+const WEEKS = 26;
+
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const nf = new Intl.NumberFormat("ru-RU");
+const n = (x) => nf.format(x);
+const date = (iso) => (iso ? new Date(iso) : null);
+const dayMonth = (d) => d.toLocaleDateString("ru-RU", { day: "numeric", month: "short" }).replace(".", "");
+const fullDate = (d) => d.toLocaleDateString("ru-RU", { day: "numeric", month: "long", year: "numeric" });
+const clock = (d) => d.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
+const stamp = (d) => (d ? `${fullDate(d)}, ${clock(d)}` : "—");
+
+function ago(d) {
+  const m = Math.round((Date.now() - d.getTime()) / 60000);
+  if (m < 1) return "только что";
+  if (m < 60) return `${m} мин назад`;
+  if (m < 60 * 24) return `${Math.round(m / 60)} ч назад`;
+  return `${Math.round(m / 1440)} дн назад`;
+}
+
+function plural(x, one, few, many) {
+  const a = Math.abs(x) % 100, b = a % 10;
+  if (a > 10 && a < 20) return many;
+  if (b > 1 && b < 5) return few;
+  if (b === 1) return one;
+  return many;
+}
+
+function shortPath(p) {
+  if (!p) return "";
+  const parts = p.split("/").filter(Boolean);
+  return parts.length > 3 ? "…/" + parts.slice(-2).join("/") : p;
+}
+
+const recs = DATA.records;
+const st = DATA.status || {};
+const total = recs.length;
+const carded = recs.filter((r) => r.card).length;
+const pending = total - carded;
+const failed = recs.filter((r) => !r.card && r.error).length;
+const syncErrors = Object.entries(DATA.sync).filter(([, s]) => s && s.last_error);
+
+/* Шапка */
+$("#db-path").textContent = DATA.db_path.replace(/^\/Users\/[^/]+/, "~");
+(function lede() {
+  const gen = date(DATA.generated_at);
+  const last = date(st.last_sync_at);
+  const p = st.progress || {};
+  const now = {
+    sync: "Прямо сейчас забираю новые разговоры.",
+    summarize: `Прямо сейчас пересказываю ${Math.min((p.done || 0) + 1, p.total || 0)} из ${p.total || 0}.`,
+    error: "Последний прогон завершился ошибкой.",
+    interrupted: "Последний прогон прервался, следующий начнётся по расписанию.",
+    none: "Синхронизация ещё не запускалась.",
+  }[DATA.state] || (pending ? "Сейчас всё спокойно, очередь пересказа разбирается каждые 15 минут." : "Всё забрано и пересказано.");
+  const parts = [`Панель собрана в <b>${clock(gen)}</b>.`];
+  if (last) parts.push(`Последняя синхронизация в <b>${clock(last)}</b>, ${ago(last)}.`);
+  parts.push(now);
+  $("#lede").innerHTML = parts.join(" ");
+})();
+
+/* 01 Сводка */
+(function tiles() {
+  const bySource = SOURCES.map(([k, name]) => `${name} ${n(recs.filter((r) => r.source === k).length)}`).join(" · ");
+  const pct = total ? Math.round((carded / total) * 100) : 0;
+  const runs = Math.ceil(pending / DATA.batch_limit);
+  const items = [
+    ["Разговоров", n(total), bySource],
+    ["С карточкой", n(carded), `${pct}% базы`, pct],
+    ["Ждут пересказа", n(pending), pending ? `≈ ${n(runs)} ${plural(runs, "прогон", "прогона", "прогонов")} по ${DATA.batch_limit}, это около ${Math.max(1, Math.round(runs * 15 / 60))} ч` : "очередь пуста"],
+    ["Ошибки", n(failed + syncErrors.length), failed || syncErrors.length
+      ? [failed && `${n(failed)} не удалось пересказать`, syncErrors.length && `${syncErrors.length} в источниках`].filter(Boolean).join(", ")
+      : "ни одной"],
+  ];
+  $("#tiles").innerHTML = items.map(([label, value, note, bar]) => `
+    <div class="card tile">
+      <p class="label" style="margin:0">${esc(label)}</p>
+      <p class="value">${esc(value)}</p>
+      <p class="note">${esc(note)}</p>
+      ${bar !== undefined ? `<div class="bar" role="progressbar" aria-valuenow="${bar}" aria-valuemin="0" aria-valuemax="100"><span style="width:${bar}%"></span></div>` : ""}
+    </div>`).join("");
+})();
+
+/* 02 Источники */
+(function sources() {
+  $("#sources").innerHTML = SOURCES.map(([key, name]) => {
+    const rs = recs.filter((r) => r.source === key);
+    const cards = rs.filter((r) => r.card).length;
+    const latest = rs.length ? date(rs[0].updated_at) : null;
+    const s = DATA.sync[key];
+    const seen = DATA.files_seen[key] || 0;
+    const service = key === "chatgpt" ? null : Math.max(0, seen - rs.length);
+    let sync;
+    if (!s) sync = `<span class="tag">не запускалась</span>`;
+    else if (s.last_error) sync = `<span class="tag err">ошибка</span> <span class="muted">${esc(s.last_error)}</span>`;
+    else sync = `<span class="tag ok">ок</span> <span class="muted">${esc(ago(date(s.last_success_at)))}</span>`;
+    if (key === "chatgpt" && !rs.length) {
+      return `<tr><td>${name}</td><td colspan="6" class="muted">Пока пусто. Сделай экспорт в ChatGPT (Settings → Data controls → Export data) и положи архив в <code>~/brain/inbox</code>.</td><td>${sync}</td></tr>`;
+    }
+    return `<tr>
+      <td>${name}</td>
+      <td class="n">${n(rs.length)}</td>
+      <td class="n">${n(cards)}</td>
+      <td class="n">${n(rs.length - cards)}</td>
+      <td class="n">${n(DATA.waiting[key] || 0)}</td>
+      <td class="n">${service === null ? "—" : n(service)}</td>
+      <td class="muted">${latest ? esc(dayMonth(latest)) : "—"}</td>
+      <td>${sync}</td>
+    </tr>`;
+  }).join("");
+})();
+
+/* 03 Активность: столбцы по неделям (понедельник — начало недели) */
+function weekStart(d) {
+  const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  x.setDate(x.getDate() - ((x.getDay() + 6) % 7));
+  return x;
+}
+const thisWeek = weekStart(new Date());
+const weeks = Array.from({ length: WEEKS }, (_, i) => {
+  const start = new Date(thisWeek);
+  start.setDate(start.getDate() - (WEEKS - 1 - i) * 7);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 6);
+  return { start, end, count: 0 };
+});
+for (const r of recs) {
+  const d = date(r.updated_at);
+  if (!d) continue;
+  const i = Math.round((weekStart(d) - weeks[0].start) / (7 * 864e5));
+  if (i >= 0 && i < WEEKS) weeks[i].count++;
+}
+// Пустые недели до начала истории не показываем, но меньше 8 столбцов не делаем.
+const firstActive = weeks.findIndex((w) => w.count > 0);
+const shown = weeks.slice(firstActive < 0 ? WEEKS - 8 : Math.max(0, Math.min(firstActive - 1, WEEKS - 8)));
+const inShown = shown.reduce((a, w) => a + w.count, 0);
+$("#chart-sub").textContent = `С ${dayMonth(shown[0].start)} — ${n(inShown)} ${plural(inShown, "разговор", "разговора", "разговоров")}, по неделе последнего сообщения`;
+
+function niceMax(v) {
+  if (v <= 4) return 4;
+  const pow = 10 ** Math.floor(Math.log10(v));
+  for (const m of [1, 2, 2.5, 5, 10]) if (m * pow >= v) return m * pow;
+  return 10 * pow;
+}
+
+function drawChart() {
+  const box = $("#chart");
+  const W = box.clientWidth, H = box.clientHeight;
+  const pad = { top: 20, right: 0, bottom: 28, left: 36 };
+  const pw = W - pad.left - pad.right, ph = H - pad.top - pad.bottom;
+  const N = shown.length;
+  const max = niceMax(Math.max(...shown.map((w) => w.count), 1));
+  const ticks = [0, 0.25, 0.5, 0.75, 1].map((t) => Math.round(max * t));
+  const slot = pw / N, bw = Math.max(2, Math.min(slot * 0.68, 48));
+  const every = N > 16 ? 4 : N > 8 ? 2 : 1;
+  const y = (v) => pad.top + ph - (v / max) * ph;
+  const latest = shown[N - 1];
+  const peak = shown.reduce((a, w) => (w.count > a.count ? w : a), shown[0]);
+  let svg = `<svg viewBox="0 0 ${W} ${H}" aria-hidden="true">`;
+  for (const t of [...new Set(ticks)]) {
+    svg += `<line class="grid" x1="${pad.left}" x2="${W}" y1="${y(t) + 0.5}" y2="${y(t) + 0.5}"/>`;
+    svg += `<text class="axis" x="${pad.left - 8}" y="${y(t) + 4}" text-anchor="end">${t}</text>`;
+  }
+  shown.forEach((w, i) => {
+    const x = pad.left + i * slot + (slot - bw) / 2;
+    const h = (w.count / max) * ph, top = pad.top + ph - h, r = Math.min(4, h, bw / 2);
+    const mark = w.count
+      ? `<path class="mark" d="M${x},${pad.top + ph} V${top + r} Q${x},${top} ${x + r},${top} H${x + bw - r} Q${x + bw},${top} ${x + bw},${top + r} V${pad.top + ph} Z"/>`
+      : "";
+    const label = w.count && (w === peak || w === latest)
+      ? `<text class="value-label" x="${x + bw / 2}" y="${top - 6}" text-anchor="middle">${w.count}</text>` : "";
+    svg += `<g class="slot" data-i="${i}">${mark}${label}<rect class="hit" x="${pad.left + i * slot}" y="${pad.top}" width="${slot}" height="${ph}"/></g>`;
+    if ((N - 1 - i) % every === 0) {
+      svg += `<text class="axis" x="${x + bw / 2}" y="${H - 6}" text-anchor="middle">${dayMonth(w.start)}</text>`;
+    }
+  });
+  svg += `</svg>`;
+  box.innerHTML = svg;
+  box.setAttribute("aria-label", `Столбчатый график: разговоры по неделям, больше всего ${peak.count} за неделю с ${dayMonth(peak.start)}`);
+}
+
+const tip = $("#tip");
+$("#chart").addEventListener("mousemove", (e) => {
+  const g = e.target.closest(".slot");
+  document.querySelectorAll(".slot.on").forEach((el) => el !== g && el.classList.remove("on"));
+  if (!g) { tip.hidden = true; return; }
+  g.classList.add("on");
+  const w = shown[+g.dataset.i];
+  tip.innerHTML = `${dayMonth(w.start)} — ${dayMonth(w.end)}<br><span class="num">${w.count}</span> ${plural(w.count, "разговор", "разговора", "разговоров")}`;
+  tip.hidden = false;
+  const tw = tip.offsetWidth;
+  tip.style.left = Math.min(window.innerWidth - tw - 8, e.clientX + 14) + "px";
+  tip.style.top = e.clientY - tip.offsetHeight - 12 + "px";
+});
+$("#chart").addEventListener("mouseleave", () => {
+  tip.hidden = true;
+  document.querySelectorAll(".slot.on").forEach((el) => el.classList.remove("on"));
+});
+drawChart();
+let resizeTimer;
+window.addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(drawChart, 100); });
+
+/* 04 Проекты */
+(function projects() {
+  const groups = new Map();
+  for (const r of recs) {
+    const key = r.project || "";
+    const g = groups.get(key) || { key, count: 0, cards: 0, latest: r.updated_at };
+    g.count++;
+    if (r.card) g.cards++;
+    if (r.updated_at > g.latest) g.latest = r.updated_at;
+    groups.set(key, g);
+  }
+  const top = [...groups.values()].sort((a, b) => b.count - a.count).slice(0, 15);
+  const max = top.length ? top[0].count : 1;
+  $("#projects").innerHTML = top.map((g) => `
+    <tr class="clickable" tabindex="0" data-project="${esc(g.key)}">
+      <td class="mono" title="${esc(g.key)}">${esc(shortPath(g.key) || "без проекта")}</td>
+      <td class="n">${n(g.count)}</td>
+      <td style="vertical-align:middle"><div class="inline-bar" style="width:${(g.count / max) * 100}%"></div></td>
+      <td class="n">${n(g.cards)}</td>
+      <td class="muted">${esc(dayMonth(date(g.latest)))}</td>
+    </tr>`).join("");
+  const pick = (el) => {
+    filters.q = el.dataset.project ? shortPath(el.dataset.project).replace(/^…\//, "") : "";
+    $("#q").value = filters.q;
+    renderRecords();
+    $("#records-section").scrollIntoView({ behavior: "smooth" });
+  };
+  $("#projects").addEventListener("click", (e) => { const tr = e.target.closest("tr"); if (tr) pick(tr); });
+  $("#projects").addEventListener("keydown", (e) => { if (e.key === "Enter") { const tr = e.target.closest("tr"); if (tr) pick(tr); } });
+})();
+
+/* 05 Записи */
+const filters = { q: "", source: "all", status: "all" };
+function seg(el, key, options) {
+  el.innerHTML = options.map(([v, label]) => `<button type="button" data-v="${v}" aria-pressed="${filters[key] === v}">${label}</button>`).join("");
+  el.addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    filters[key] = b.dataset.v;
+    el.querySelectorAll("button").forEach((x) => x.setAttribute("aria-pressed", x === b));
+    renderRecords();
+  });
+}
+seg($("#f-source"), "source", [["all", "Все"], ...SOURCES]);
+seg($("#f-status"), "status", [["all", "Любые"], ["card", "С карточкой"], ["wait", "Ждут"], ["err", "Ошибка"]]);
+$("#q").addEventListener("input", (e) => { filters.q = e.target.value; renderRecords(); });
+
+function statusTag(r) {
+  if (r.card) return `<span class="tag ok">есть</span>`;
+  if (r.error) return `<span class="tag err">ошибка</span>`;
+  return `<span class="tag wait">ждёт</span>`;
+}
+
+function matches(r) {
+  if (filters.source !== "all" && r.source !== filters.source) return false;
+  if (filters.status === "card" && !r.card) return false;
+  if (filters.status === "wait" && (r.card || r.error)) return false;
+  if (filters.status === "err" && (r.card || !r.error)) return false;
+  const q = filters.q.trim().toLowerCase();
+  if (!q) return true;
+  const hay = [r.title, r.project, r.keywords, r.summary].join(" ").toLowerCase();
+  return q.split(/\s+/).every((w) => hay.includes(w));
+}
+
+function renderRecords() {
+  const list = recs.filter(matches);
+  $("#count").textContent = list.length === total
+    ? `Все ${n(total)} ${plural(total, "запись", "записи", "записей")}, свежие сверху`
+    : `Найдено ${n(list.length)} из ${n(total)}`;
+  $("#records").innerHTML = list.length ? list.map((r) => `
+    <tr class="clickable" tabindex="0" data-id="${r.id}">
+      <td class="mono muted" style="white-space:nowrap">${esc(dayMonth(date(r.updated_at)))}</td>
+      <td><span class="tag">${esc(SOURCE_NAME[r.source] || r.source)}</span></td>
+      <td class="title"><div class="t">${esc(r.title)}</div>${r.summary ? `<div class="s">${esc(r.summary)}</div>` : ""}</td>
+      <td class="mono muted" title="${esc(r.project)}">${esc(shortPath(r.project))}</td>
+      <td>${statusTag(r)}</td>
+    </tr>`).join("") : `<tr><td colspan="5" class="empty">Ничего не нашлось. Попробуй другое слово или сбрось фильтры.</td></tr>`;
+}
+renderRecords();
+
+const byId = new Map(recs.map((r) => [r.id, r]));
+const openFrom = (e) => { const tr = e.target.closest("tr[data-id]"); if (tr) openRecord(byId.get(+tr.dataset.id)); };
+$("#records").addEventListener("click", openFrom);
+$("#records").addEventListener("keydown", (e) => { if (e.key === "Enter") openFrom(e); });
+
+/* Карточка записи */
+let lastFocus = null;
+function openRecord(r) {
+  closeRecord();
+  lastFocus = document.activeElement;
+  const started = date(r.started_at), updated = date(r.updated_at);
+  const notice = r.card ? "" : r.error
+    ? `<p class="notice err">Модель не смогла пересказать этот разговор: ${esc(r.error)}. Попробует ещё раз в одном из следующих прогонов.</p>`
+    : `<p class="notice wait">Карточки пока нет: разговор в очереди на пересказ.</p>`;
+  const atoms = r.atoms.map((a) => {
+    const m = a.match(/^\[(\w+)\]\s*(.*)$/s);
+    return m ? `<li><span class="tag">${esc(ATOM_NAME[m[1]] || m[1])}</span>${esc(m[2])}</li>` : `<li>${esc(a)}</li>`;
+  }).join("");
+  const scrim = document.createElement("div");
+  scrim.className = "scrim";
+  scrim.addEventListener("click", closeRecord);
+  const d = document.createElement("aside");
+  d.className = "drawer";
+  d.setAttribute("role", "dialog");
+  d.setAttribute("aria-modal", "true");
+  d.setAttribute("aria-label", r.title);
+  d.innerHTML = `
+    <button class="close" type="button">Закрыть</button>
+    <p class="label">${esc(SOURCE_NAME[r.source] || r.source)} · id ${r.id}</p>
+    <h2>${esc(r.title)}</h2>
+    <dl class="meta">
+      <dt>Начат</dt><dd>${esc(stamp(started))}</dd>
+      <dt>Последнее сообщение</dt><dd>${esc(stamp(updated))}</dd>
+      <dt>Проект</dt><dd class="mono">${esc(r.project || "—")}</dd>
+      <dt>Файл</dt><dd class="mono">${esc(r.location || "—")}</dd>
+    </dl>
+    ${notice}
+    ${r.summary ? `<p class="label" style="margin-top:var(--space-6)">Кратко</p><p>${esc(r.summary)}</p>` : ""}
+    ${atoms ? `<p class="label" style="margin-top:var(--space-6)">Атомы</p><ul>${atoms}</ul>` : ""}
+    ${r.questions.length ? `<p class="label" style="margin-top:var(--space-6)">Как это будут искать</p><ul>${r.questions.map((q) => `<li>${esc(q)}</li>`).join("")}</ul>` : ""}
+    ${r.keywords ? `<p class="label" style="margin-top:var(--space-6)">Ключевые слова</p><p class="muted" style="font-size:14px">${esc(r.keywords)}</p>` : ""}
+    <p class="label" style="margin-top:var(--space-6)">Расшифровка</p>
+    <p class="muted" style="font-size:14px;margin-bottom:var(--space-3)">${r.body_len > DATA.preview_chars
+      ? `Первые ${n(DATA.preview_chars)} из ${n(r.body_len)} символов. Целиком: <code>brain show ${r.id}</code> или «Последние карточки» в значке.`
+      : `${n(r.body_len)} символов.`}</p>
+    <pre class="transcript">${esc(r.preview)}</pre>`;
+  d.querySelector(".close").addEventListener("click", closeRecord);
+  document.body.append(scrim, d);
+  d.querySelector(".close").focus();
+}
+function closeRecord() {
+  document.querySelectorAll(".scrim, .drawer").forEach((el) => el.remove());
+  if (lastFocus) { lastFocus.focus(); lastFocus = null; }
+}
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeRecord(); });
+</script>
+</body>
+</html>

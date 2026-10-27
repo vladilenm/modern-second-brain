@@ -1,0 +1,7 @@
+# Личные данные и ключи — только локально
+data/
+inbox/
+config.json
+__pycache__/
+*.pyc
+menubar/build/

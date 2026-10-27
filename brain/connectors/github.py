@@ -66,9 +66,10 @@ def login_of(obj: Optional[dict]) -> str:
     return (obj or {}).get("login") or "ghost"
 
 
-def month_start(iso: str) -> str:
-    """2026-10-20T12:00:00Z → 2026-10-01T00:00:00Z."""
-    return iso[:7] + "-01T00:00:00Z"
+def month_start(iso: str, back: int = 0) -> str:
+    """Первое число месяца, на `back` месяцев раньше месяца из iso: 2026-10-20T12:00:00Z → 2026-10-01T00:00:00Z."""
+    index = int(iso[:4]) * 12 + int(iso[5:7]) - 1 - back
+    return f"{index // 12:04d}-{index % 12 + 1:02d}-01T00:00:00Z"
 
 
 class GitHubAPI:
@@ -133,8 +134,17 @@ class GitHubConnector(ApiConnector):
                         read_token(self.settings.get("token_command")))
         login = api.get("/user")["login"]
         pos = self._position(cursor)
-        yield from self._discussions(api, login, pos)
+        failed = None
+        try:
+            yield from self._discussions(api, login, pos)
+        except Fatal:
+            raise
+        except RuntimeError as exc:
+            # Обсуждения упали — коммиты и README всё равно забираем, ошибку покажем в конце прогона.
+            failed = exc
         yield from self._repos(api, login, pos)
+        if failed:
+            raise failed
 
     def _position(self, cursor: Optional[str]) -> dict:
         start = to_iso((datetime.now(timezone.utc) - timedelta(days=self.backfill_days)).timestamp())
@@ -151,23 +161,35 @@ class GitHubConnector(ApiConnector):
         # остаток заберёт следующий прогон с курсора.
         found = api.items("/search/issues", {"q": f"involves:{login} updated:>={pos['issues']}",
                                              "sort": "updated", "order": "asc"})
-        start = pos["issues"]
+        start = saved = pos["issues"]  # saved — курсор, который реально ушёл в пачке
         batch: List[Record] = []
-        for item in found:
-            repo = item["repository_url"].split("/repos/", 1)[1]
-            if not self.excludes(repo):
-                try:
-                    batch.append(self._discussion(api, repo, item))
-                except NotFound:
-                    # Обсуждение пропало вместе с репозиторием — не повод стопорить источник.
-                    pass
-            pos["issues"] = item["updated_at"]
-            if len(batch) >= DISCUSSION_BATCH:
+        try:
+            for item in found:
+                repo = item["repository_url"].split("/repos/", 1)[1]
+                if not self.excludes(repo):
+                    try:
+                        batch.append(self._discussion(api, repo, item))
+                    except NotFound:
+                        # Обсуждение пропало вместе с репозиторием — не повод стопорить источник.
+                        pass
+                    except Fatal:
+                        raise
+                    except RuntimeError as exc:
+                        raise RuntimeError(f"{exc} — обсуждение {repo}#{item['number']}; если ошибка повторяется, "
+                                           f"добавь {repo} в exclude_repos") from None
+                pos["issues"] = item["updated_at"]
+                if len(batch) >= DISCUSSION_BATCH:
+                    yield Batch(batch, json.dumps(pos, sort_keys=True))
+                    saved = pos["issues"]
+                    batch = []
+            # Курсор сохраняем и тогда, когда хвост прогона весь отфильтрован: иначе он переберётся заново.
+            if batch or pos["issues"] != start:
                 yield Batch(batch, json.dumps(pos, sort_keys=True))
-                batch = []
-        # Курсор сохраняем и тогда, когда хвост прогона весь отфильтрован: иначе он переберётся заново.
-        if batch or pos["issues"] != start:
-            yield Batch(batch, json.dumps(pos, sort_keys=True))
+                saved = pos["issues"]
+        except Exception:
+            # Несохранённые обсуждения не должны уйти в курсор следующих пачек (репозиториев).
+            pos["issues"] = saved
+            raise
 
     def _discussion(self, api: GitHubAPI, repo: str, item: dict) -> Record:
         number = item["number"]
@@ -210,7 +232,9 @@ class GitHubConnector(ApiConnector):
         """Репозитории, в которые пушили после курсора, по одному на пачку: их месяцы коммитов и README."""
         # Пока проход по репозиториям не закончен, нижняя граница хранится в курсоре: оборвался
         # посередине — следующий прогон доберёт остальные репозитории с того же месяца.
-        since = pos.get("repos_since") or month_start(pos["repos"])  # месяцы собираем заново целиком
+        # Месяцы собираем заново целиком и начинаем с месяца до курсора: курсор — самый поздний push,
+        # а коммиты конца прошлого месяца могли запушиться уже в новом, иначе они бы не попали.
+        since = pos.get("repos_since") or month_start(pos["repos"], back=1)
         pos["repos_since"] = since
         repos = [r for r in api.items("/user/repos", {"affiliation": "owner,collaborator,organization_member"})
                  if not r.get("fork") and (r.get("pushed_at") or "") >= pos["repos"]

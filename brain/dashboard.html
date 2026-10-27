@@ -228,7 +228,7 @@ code { font: 400 13px var(--font-mono); padding: 1px 4px; border-radius: var(--r
     <div class="card">
       <div class="card-head">
         <div>
-          <h2 class="card-title">Разговоры по неделям</h2>
+          <h2 class="card-title">Записи по неделям</h2>
           <p class="card-sub" id="chart-sub"></p>
         </div>
       </div>
@@ -411,7 +411,7 @@ for (const r of recs) {
 const firstActive = weeks.findIndex((w) => w.count > 0);
 const shown = weeks.slice(firstActive < 0 ? WEEKS - 8 : Math.max(0, Math.min(firstActive - 1, WEEKS - 8)));
 const inShown = shown.reduce((a, w) => a + w.count, 0);
-$("#chart-sub").textContent = `С ${dayMonth(shown[0].start)} — ${n(inShown)} ${plural(inShown, "разговор", "разговора", "разговоров")}, по неделе последнего сообщения`;
+$("#chart-sub").textContent = `С ${dayMonth(shown[0].start)} — ${n(inShown)} ${plural(inShown, "запись", "записи", "записей")}, по неделе последнего сообщения`;
 
 function niceMax(v) {
   if (v <= 4) return 4;
@@ -453,7 +453,7 @@ function drawChart() {
   });
   svg += `</svg>`;
   box.innerHTML = svg;
-  box.setAttribute("aria-label", `Столбчатый график: разговоры по неделям, больше всего ${peak.count} за неделю с ${dayMonth(peak.start)}`);
+  box.setAttribute("aria-label", `Столбчатый график: записи по неделям, больше всего ${peak.count} за неделю с ${dayMonth(peak.start)}`);
 }
 
 const tip = $("#tip");
@@ -463,7 +463,7 @@ $("#chart").addEventListener("mousemove", (e) => {
   if (!g) { tip.hidden = true; return; }
   g.classList.add("on");
   const w = shown[+g.dataset.i];
-  tip.innerHTML = `${dayMonth(w.start)} — ${dayMonth(w.end)}<br><span class="num">${w.count}</span> ${plural(w.count, "разговор", "разговора", "разговоров")}`;
+  tip.innerHTML = `${dayMonth(w.start)} — ${dayMonth(w.end)}<br><span class="num">${w.count}</span> ${plural(w.count, "запись", "записи", "записей")}`;
   tip.hidden = false;
   const tw = tip.offsetWidth;
   tip.style.left = Math.min(window.innerWidth - tw - 8, e.clientX + 14) + "px";

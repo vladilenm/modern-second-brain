@@ -225,7 +225,7 @@ final class BrainBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 info(runs == 1
                      ? "Карточки сделает синхронизация в \(clockFormatter.string(from: nextRun()))"
                      : "Карточки сделают ближайшие \(runs) \(plural(runs, "синхронизация", "синхронизации", "синхронизаций"))")
-                info("Пока они ищутся только по тексту разговора")
+                info("Пока они ищутся только по тексту записи")
             }
         }
         for e in status["sync_errors"] as? [[String: Any]] ?? [] {

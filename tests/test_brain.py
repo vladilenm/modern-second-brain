@@ -29,7 +29,7 @@ from brain.connectors.base import ApiConnector, Batch, Record  # noqa: E402
 from brain.connectors.chatgpt_export import ChatGPTExportConnector  # noqa: E402
 from brain.connectors.claude_code import ClaudeCodeConnector  # noqa: E402
 from brain.connectors.codex import CodexConnector  # noqa: E402
-from brain.connectors.github import Fatal, GitHubConnector  # noqa: E402
+from brain.connectors.github import Fatal, GitHubConnector, month_start  # noqa: E402
 
 
 def write_jsonl(path: Path, items) -> Path:
@@ -620,7 +620,7 @@ class GitHubRepoTests(GitHubCase):
         third = self.sync()
         self.assertEqual((third["new"], third["changed"]), (0, 1))  # пересобран только октябрь
         [since] = [p["since"][0] for path, p, _ in FakeGitHub.hits if path == "/repos/vm/brain/commits"]
-        self.assertEqual(since, "2026-10-01T00:00:00Z")
+        self.assertEqual(since, "2026-09-01T00:00:00Z")  # месяц до курсора: конец месяца мог запушиться позже
         self.assertEqual([p["author"] for path, p, _ in FakeGitHub.hits if path == "/repos/vm/brain/commits"],
                          [["vm"]])
         body = self.conn.execute(
@@ -646,6 +646,24 @@ class GitHubRepoTests(GitHubCase):
         self.assertIn("vm/brain", error)  # в ошибке сказано, какой репозиторий мешает
         self.assertIn("exclude_repos", error)
 
+    def test_discussion_failure_still_collects_repos(self):
+        FakeGitHub.routes["/repos/vm/brain/pulls/7/reviews"] = 500  # PR #7 стабильно не читается
+        totals = self.sync()
+        # Коммиты и README забраны, ошибка обсуждения показана в конце; пачка с PR #7 и issue #5 не сохранена.
+        self.assertEqual((totals["errors"], totals["new"]), (1, 3))
+        cursor = json.loads(db.get_cursor(self.conn, "github"))
+        self.assertEqual(cursor["repos"], "2026-10-20T12:00:00Z")
+        self.assertNotIn("repos_since", cursor)
+        self.assertLess(cursor["issues"], "2026-10-01T00:00:00Z")  # курсор не перепрыгнул несохранённые обсуждения
+        error = self.conn.execute("SELECT last_error FROM sync_state WHERE source = 'github'").fetchone()[0]
+        self.assertIn("vm/brain#7", error)
+        self.assertIn("exclude_repos", error)
+
+    def test_month_start(self):
+        self.assertEqual(month_start("2026-10-20T12:00:00Z"), "2026-10-01T00:00:00Z")
+        self.assertEqual(month_start("2026-10-20T12:00:00Z", back=1), "2026-09-01T00:00:00Z")
+        self.assertEqual(month_start("2026-01-15T00:00:00Z", back=1), "2025-12-01T00:00:00Z")
+
     def test_interrupted_pass_keeps_month_floor(self):
         self.sync()  # полный прогон: курсор repos = 2026-10-20, граница месяца снята
         FakeGitHub.routes["/user/repos"] = [gh_repo("vm/aaa", pushed_at="2026-11-01T00:00:00Z"),
@@ -655,12 +673,12 @@ class GitHubRepoTests(GitHubCase):
         self.assertEqual(self.sync()["errors"], 1)
         cursor = json.loads(db.get_cursor(self.conn, "github"))
         self.assertEqual((cursor["repos"], cursor["repos_since"]),
-                         ("2026-11-01T00:00:00Z", "2026-10-01T00:00:00Z"))
+                         ("2026-11-01T00:00:00Z", "2026-09-01T00:00:00Z"))
         FakeGitHub.routes["/repos/vm/brain/commits"] = gh_repo_routes()["/repos/vm/brain/commits"]
         FakeGitHub.hits.clear()
         self.assertEqual(self.sync()["errors"], 0)
         [since] = [p["since"][0] for path, p, _ in FakeGitHub.hits if path == "/repos/vm/brain/commits"]
-        self.assertEqual(since, "2026-10-01T00:00:00Z")  # октябрьские коммиты догнаны, а не потеряны
+        self.assertEqual(since, "2026-09-01T00:00:00Z")  # коммиты с границы месяца догнаны, а не потеряны
         self.assertNotIn("repos_since", json.loads(db.get_cursor(self.conn, "github")))
 
     def test_no_connection(self):

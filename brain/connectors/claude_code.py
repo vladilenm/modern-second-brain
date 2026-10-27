@@ -49,6 +49,9 @@ def assistant_text(content) -> str:
 
 class ClaudeCodeConnector(FileConnector):
     name = "claude_code"
+    source = "claude_code"
+    title = "Claude Code"
+    about = "разговоры в Claude Code"
 
     def files(self) -> Iterable[Path]:
         for root in self.settings.get("roots", []):
@@ -86,7 +89,7 @@ class ClaudeCodeConnector(FileConnector):
             return []
         updated = updated or to_iso(path.stat().st_mtime)
         return [Record(
-            source=self.name,
+            source=self.source,
             external_id=path.stem,
             title=title or first_line(user_turns[0]),
             body=render_dialog(turns),

@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from brain import config, db, status, summarize  # noqa: E402
+from brain import connectors  # noqa: E402
 from brain import search as search_mod  # noqa: E402
 from brain import sync as sync_mod  # noqa: E402
 from brain.connectors.base import Record  # noqa: E402
@@ -134,6 +135,32 @@ class ConnectorTests(unittest.TestCase):
         self.assertEqual((rec.source, rec.external_id, rec.title), ("chatgpt", "c1", "Цены на курс"))
         self.assertIn("ChatGPT: 49 000 рублей", rec.body)
         self.assertNotIn("Старый ответ", rec.body)
+
+
+class RegistryTests(unittest.TestCase):
+    def test_every_connector_is_described(self):
+        reg = connectors.registry()
+        self.assertEqual([r["source"] for r in reg], ["claude_code", "codex", "chatgpt"])
+        self.assertEqual([r["connector"] for r in reg], ["claude_code", "codex", "chatgpt_export"])
+        for r in reg:
+            self.assertTrue(r["title"] and r["about"], r)
+        self.assertEqual({r["type"] for r in reg}, {"file"})
+        self.assertTrue(dict((r["source"], r["hint"]) for r in reg)["chatgpt"])
+
+    def test_names_come_from_registry(self):
+        from brain import mcp_server, render
+        self.assertEqual(render.source_name("chatgpt"), "ChatGPT")
+        self.assertEqual(render.source_name("неизвестный"), "неизвестный")
+        [search_tool] = [t for t in mcp_server.TOOLS if t["name"] == "search"]
+        self.assertEqual(search_tool["inputSchema"]["properties"]["source"]["enum"], list(connectors.source_names()))
+        for r in connectors.registry():
+            self.assertIn(r["about"], mcp_server.INSTRUCTIONS)
+
+    def test_file_roots(self):
+        cfg = make_cfg(Path(tempfile.mkdtemp()))
+        self.assertEqual(ClaudeCodeConnector(cfg).roots(), cfg["sources"]["claude_code"]["roots"])
+        self.assertEqual(ChatGPTExportConnector(cfg).roots(), [cfg["inbox"]])
+        self.assertFalse(ChatGPTExportConnector.one_record_per_file)
 
 
 class StoreAndSearchTests(unittest.TestCase):

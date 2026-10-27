@@ -66,6 +66,15 @@ def conversation_to_record(conv: dict, location: str) -> Optional[Record]:
 
 class ChatGPTExportConnector(FileConnector):
     name = "chatgpt_export"
+    source = "chatgpt"
+    title = "ChatGPT"
+    about = "чаты ChatGPT из экспорта"
+    empty_hint = ("Пока пусто. Сделай экспорт в ChatGPT (Settings → Data controls → Export data) "
+                  "и положи архив в ~/brain/inbox.")
+    one_record_per_file = False  # в одном архиве — все чаты
+
+    def roots(self) -> List[str]:
+        return [str(Path(self.cfg["inbox"]).expanduser())]
 
     def files(self) -> Iterable[Path]:
         inbox = Path(self.cfg["inbox"]).expanduser()

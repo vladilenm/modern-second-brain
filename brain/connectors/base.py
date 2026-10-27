@@ -27,7 +27,21 @@ class Record:
     kind: str = "dialog"  # dialog | discussion | changelog | document — от него зависит промпт пересказа
 
 
-class FileConnector:
+class Connector:
+    """Общее у всех коннекторов: ключ настроек, источник записей и как его показывать людям."""
+
+    name = ""        # ключ в config.sources и в sync_state
+    source = ""      # значение Record.source
+    title = ""       # название для людей: «Claude Code», «GitHub»
+    about = ""       # что лежит в источнике — для описания MCP-сервера
+    empty_hint = ""  # что сделать, если записей пока нет; панель показывает это вместо пустой строки
+
+    def __init__(self, cfg: dict):
+        self.cfg = cfg
+        self.settings = cfg["sources"].get(self.name, {})
+
+
+class FileConnector(Connector):
     """Коннектор к источнику, который лежит файлами на диске.
 
     Курсор ведёт sync.py: файл перечитывается, только если у него изменились
@@ -35,15 +49,17 @@ class FileConnector:
     (чтобы не пересказывать недописанный разговор).
     """
 
-    name = ""
-
-    def __init__(self, cfg: dict):
-        self.cfg = cfg
-        self.settings = cfg["sources"].get(self.name, {})
+    # Один файл — одна запись. Тогда разница между просмотренными файлами и записями —
+    # служебные сессии без разговора, и панель её показывает.
+    one_record_per_file = True
 
     @property
     def idle_seconds(self) -> float:
         return float(self.settings.get("idle_minutes", 30)) * 60
+
+    def roots(self) -> List[str]:
+        """Папки, которые читает коннектор."""
+        return [str(Path(r).expanduser()) for r in self.settings.get("roots", [])]
 
     def files(self) -> Iterable[Path]:
         raise NotImplementedError

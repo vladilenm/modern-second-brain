@@ -45,6 +45,9 @@ def assistant_text(blocks) -> str:
 
 class CodexConnector(FileConnector):
     name = "codex"
+    source = "codex"
+    title = "Codex"
+    about = "разговоры в Codex"
 
     def files(self) -> Iterable[Path]:
         for root in self.settings.get("roots", []):
@@ -85,7 +88,7 @@ class CodexConnector(FileConnector):
         if meta is None or not user_turns:
             return []
         return [Record(
-            source=self.name,
+            source=self.source,
             external_id=str(meta.get("id") or path.stem),
             title=title or first_line(user_turns[0]),
             body=render_dialog(turns),

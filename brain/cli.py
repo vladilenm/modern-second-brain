@@ -6,7 +6,7 @@ import json
 import sys
 from typing import List, Optional
 
-from . import config, db, render, status, summarize
+from . import config, connectors, db, render, status, summarize
 from . import search as search_mod
 from . import sync as sync_mod
 from .timeutil import age_days, now_iso
@@ -74,7 +74,7 @@ def cmd_status(args, cfg) -> int:
            FROM records GROUP BY source ORDER BY source"""
     ).fetchall()
     for r in rows:
-        print(f"  {render.SOURCE_NAMES.get(r['source'], r['source'])}: записей {r['n']}, "
+        print(f"  {render.source_name(r['source'])}: записей {r['n']}, "
               f"с пересказом {r['done']}, последняя от {r['latest']}")
     if not rows:
         print("  записей пока нет — запусти brain sync")
@@ -109,11 +109,12 @@ def cmd_mcp(args, cfg) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="brain", description="Второй мозг: поиск по прошлым разговорам с ИИ")
+    p = argparse.ArgumentParser(prog="brain", description="Второй мозг: поиск по прошлой работе — "
+                                                          "разговорам с ИИ и подключённым источникам")
     sub = p.add_subparsers(dest="command")
 
     s = sub.add_parser("sync", help="забрать новое из источников и пересказать")
-    s.add_argument("--source", help="только один источник: claude_code, codex, chatgpt_export")
+    s.add_argument("--source", help="только один источник: " + ", ".join(connectors.ALL))
     s.add_argument("--no-summarize", action="store_true", help="без пересказа")
     s.add_argument("--rescan", action="store_true", help="перечитать все файлы (после правки коннектора)")
     s.add_argument("--limit", type=int, help="сколько записей пересказать за запуск")
@@ -126,7 +127,7 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("search", help="поиск")
     s.add_argument("query")
     s.add_argument("-n", type=int, default=8, help="сколько результатов")
-    s.add_argument("--source", help="claude_code, codex или chatgpt")
+    s.add_argument("--source", help=", ".join(connectors.source_names()))
     s.add_argument("--json", action="store_true")
     s.set_defaults(func=cmd_search)
 

@@ -4,11 +4,15 @@ from __future__ import annotations
 import sqlite3
 from typing import List
 
-SOURCE_NAMES = {"claude_code": "Claude Code", "codex": "Codex", "chatgpt": "ChatGPT"}
+from . import connectors
+
+
+def source_name(source: str) -> str:
+    return connectors.source_names().get(source, source)
 
 
 def result_text(r: dict) -> str:
-    meta = " · ".join(x for x in (SOURCE_NAMES.get(r["source"], r["source"]), r["updated_at"][:10], r["project"]) if x)
+    meta = " · ".join(x for x in (source_name(r["source"]), r["updated_at"][:10], r["project"]) if x)
     lines = [f"[id {r['id']}] {r['title']}", f"  {meta}"]
     text = r["summary"] or r["snippet"]
     if text:
@@ -24,10 +28,10 @@ def results_text(results: List[dict]) -> str:
 def render_record(row: sqlite3.Row, offset: int = 0, max_chars: int = 20000) -> str:
     parts = [
         f"[id {row['id']}] {row['ai_title'] or row['title']}",
-        f"Источник: {SOURCE_NAMES.get(row['source'], row['source'])}",
+        f"Источник: {source_name(row['source'])}",
         f"Даты: {row['started_at'] or '—'} — {row['updated_at']}",
         f"Проект: {row['project'] or '—'}",
-        f"Файл: {row['location'] or '—'}",
+        f"Где: {row['location'] or '—'}",
     ]
     if offset == 0:
         if row["summary"]:
@@ -36,7 +40,7 @@ def render_record(row: sqlite3.Row, offset: int = 0, max_chars: int = 20000) -> 
             parts.append("\nАтомы:\n" + row["atoms"])
     body = row["body"]
     end = min(len(body), offset + max_chars)
-    parts.append(f"\nРазговор (символы {offset}–{end} из {len(body)}):\n" + body[offset:end])
+    parts.append(f"\nТекст (символы {offset}–{end} из {len(body)}):\n" + body[offset:end])
     if end < len(body):
         parts.append(f"\n…продолжение: offset={end}")
     return "\n".join(parts)

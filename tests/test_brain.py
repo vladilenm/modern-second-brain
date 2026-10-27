@@ -5,6 +5,7 @@ import copy
 import http.server
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -185,6 +186,42 @@ class StoreAndSearchTests(unittest.TestCase):
         db.upsert(self.conn, self.rec("a", "Второй прогон теста. " * 5 + "Мозг устал.", "2026-10-25T00:00:00Z"))
         db.upsert(self.conn, self.rec("b", "Собираем второй мозг на SQLite", "2026-10-20T00:00:00Z"))
         self.assertIn("второй мозг", search_mod.search(self.conn, "второй мозг")[0]["snippet"])
+
+    def test_kind_is_stored(self):
+        db.upsert(self.conn, Record("github", "pr:vm/b#1", "t", "текст", "2026-10-01T00:00:00Z", kind="discussion"))
+        db.upsert(self.conn, self.rec("1", "текст", "2026-10-01T00:00:00Z"))
+        kinds = dict(self.conn.execute("SELECT source, kind FROM records"))
+        self.assertEqual(kinds, {"github": "discussion", "codex": "dialog"})
+
+    def test_cursor_roundtrip(self):
+        self.assertIsNone(db.get_cursor(self.conn, "github"))
+        db.set_cursor(self.conn, "github", "a")
+        db.set_cursor(self.conn, "github", "b")
+        self.assertEqual(db.get_cursor(self.conn, "github"), "b")
+        db.reset_cursor(self.conn, "github")
+        self.assertIsNone(db.get_cursor(self.conn, "github"))
+
+
+class MigrationTests(unittest.TestCase):
+    def test_old_db_gets_kind_column(self):
+        path = Path(tempfile.mkdtemp()) / "old.db"
+        old = sqlite3.connect(str(path))
+        old.executescript("""
+            CREATE TABLE records (
+                id INTEGER PRIMARY KEY, source TEXT NOT NULL, external_id TEXT NOT NULL,
+                title TEXT NOT NULL DEFAULT '', body TEXT NOT NULL, location TEXT, project TEXT,
+                started_at TEXT, updated_at TEXT NOT NULL, content_hash TEXT NOT NULL, ingested_at TEXT NOT NULL,
+                ai_title TEXT, summary TEXT, questions TEXT, keywords TEXT, atoms TEXT,
+                summarized_hash TEXT, summarized_at TEXT, summary_error TEXT, UNIQUE (source, external_id));
+            INSERT INTO records (source, external_id, body, updated_at, content_hash, ingested_at)
+            VALUES ('codex', '1', 'текст', '2026-10-01T00:00:00Z', 'h', '2026-10-01T00:00:00Z');
+        """)
+        old.commit()
+        old.close()
+        conn = db.connect(str(path))
+        self.assertEqual(conn.execute("SELECT kind FROM records").fetchone()[0], "dialog")
+        conn.close()
+        db.connect(str(path)).close()  # повторное подключение не пытается добавить колонку второй раз
 
 
 class DashboardTests(unittest.TestCase):

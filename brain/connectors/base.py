@@ -24,6 +24,7 @@ class Record:
     started_at: Optional[str] = None
     location: Optional[str] = None
     project: Optional[str] = None
+    kind: str = "dialog"  # dialog | discussion | changelog | document — от него зависит промпт пересказа
 
 
 class FileConnector:

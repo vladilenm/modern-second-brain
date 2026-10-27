@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS records (
     body TEXT NOT NULL,
     location TEXT,
     project TEXT,
+    kind TEXT NOT NULL DEFAULT 'dialog',
     started_at TEXT,
     updated_at TEXT NOT NULL,
     content_hash TEXT NOT NULL,
@@ -58,7 +59,22 @@ CREATE TABLE IF NOT EXISTS sync_state (
     last_new INTEGER NOT NULL DEFAULT 0,
     last_changed INTEGER NOT NULL DEFAULT 0
 );
+
+-- Курсор API-коннекторов: до какого места источник уже забран. Формат знает только коннектор.
+CREATE TABLE IF NOT EXISTS source_cursor (
+    source TEXT PRIMARY KEY,
+    cursor TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
+
+
+def migrate(conn: sqlite3.Connection) -> None:
+    """Базы, созданные до колонки kind: все их записи — разговоры с ИИ."""
+    columns = {r["name"] for r in conn.execute("PRAGMA table_info(records)")}
+    if "kind" not in columns:
+        conn.execute("ALTER TABLE records ADD COLUMN kind TEXT NOT NULL DEFAULT 'dialog'")
+        conn.commit()
 
 
 def connect(path: str) -> sqlite3.Connection:
@@ -68,6 +84,7 @@ def connect(path: str) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode = WAL")
     conn.executescript(SCHEMA)
+    migrate(conn)
     try:
         os.chmod(p, 0o600)
     except OSError:
@@ -92,19 +109,19 @@ def upsert(conn: sqlite3.Connection, rec: Record) -> str:
         return "same"
     if row:
         conn.execute(
-            """UPDATE records SET title = ?, body = ?, location = ?, project = ?,
+            """UPDATE records SET title = ?, body = ?, location = ?, project = ?, kind = ?,
                    started_at = ?, updated_at = ?, content_hash = ?, ingested_at = ?
                WHERE id = ?""",
-            (rec.title, rec.body, rec.location, rec.project, rec.started_at,
+            (rec.title, rec.body, rec.location, rec.project, rec.kind, rec.started_at,
              rec.updated_at, h, now_iso(), row["id"]),
         )
         rid, status = row["id"], "changed"
     else:
         cur = conn.execute(
-            """INSERT INTO records (source, external_id, title, body, location, project,
+            """INSERT INTO records (source, external_id, title, body, location, project, kind,
                    started_at, updated_at, content_hash, ingested_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (rec.source, rec.external_id, rec.title, rec.body, rec.location, rec.project,
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (rec.source, rec.external_id, rec.title, rec.body, rec.location, rec.project, rec.kind,
              rec.started_at, rec.updated_at, h, now_iso()),
         )
         rid, status = cur.lastrowid, "new"
@@ -143,6 +160,24 @@ def set_file_state(conn: sqlite3.Connection, path: str, mtime: float, size: int)
         "ON CONFLICT(path) DO UPDATE SET mtime = excluded.mtime, size = excluded.size",
         (path, mtime, size),
     )
+
+
+def get_cursor(conn: sqlite3.Connection, source: str) -> Optional[str]:
+    row = conn.execute("SELECT cursor FROM source_cursor WHERE source = ?", (source,)).fetchone()
+    return row["cursor"] if row else None
+
+
+def set_cursor(conn: sqlite3.Connection, source: str, cursor: str) -> None:
+    """Без commit: sync коммитит курсор вместе с записями пачки."""
+    conn.execute(
+        "INSERT INTO source_cursor (source, cursor, updated_at) VALUES (?, ?, ?) "
+        "ON CONFLICT(source) DO UPDATE SET cursor = excluded.cursor, updated_at = excluded.updated_at",
+        (source, cursor, now_iso()),
+    )
+
+
+def reset_cursor(conn: sqlite3.Connection, source: str) -> None:
+    conn.execute("DELETE FROM source_cursor WHERE source = ?", (source,))
 
 
 def record_run(conn: sqlite3.Connection, source: str, error: Optional[str], new: int, changed: int) -> None:

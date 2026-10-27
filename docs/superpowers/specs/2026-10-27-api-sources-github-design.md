@@ -151,7 +151,9 @@ CREATE TABLE IF NOT EXISTS source_cursor (
 
 ### Доступ
 
-- Токен — вывод `gh auth token` (новых секретов нет). Команда настраивается: `token_command`.
+- Токен — вывод `gh auth token` (новых секретов нет). Команда настраивается: `token_command`;
+  по умолчанию (`null`) gh ищется и вне PATH — в `/opt/homebrew/bin` и `/usr/local/bin`: launchd
+  запускает sync с `PATH=/usr/bin:/bin:/usr/sbin:/sbin`, Homebrew туда не попадает.
 - HTTP — `urllib` к `api_base` (по умолчанию `https://api.github.com`; в тестах — локальный фейковый сервер).
   Пагинация по заголовку `Link`.
 - Логин пользователя — `GET /user`, один раз за прогон.
@@ -199,8 +201,8 @@ CREATE TABLE IF NOT EXISTS source_cursor (
 - 403/429 с исчерпанным лимитом — источник останавливается до следующего прогона, курсор остаётся
   на последней записанной пачке.
 - 404 на README, 409 на пустом репозитории — не ошибка, просто нет записи.
-- Поиск отдаёт не больше 1000 результатов; при 78 за 2 года это не ограничение, но если `total_count`
-  больше 1000, коннектор пишет предупреждение в лог.
+- Поиск отдаёт не больше 1000 результатов за запрос. Обсуждения идут по возрастанию `updated_at`,
+  поэтому остаток заберёт следующий прогон с курсора — отдельное предупреждение не нужно.
 
 ### Объём
 
@@ -216,7 +218,7 @@ CREATE TABLE IF NOT EXISTS source_cursor (
   "enabled": true,
   "every_minutes": 60,
   "backfill_days": 730,
-  "token_command": ["gh", "auth", "token"],
+  "token_command": null,
   "api_base": "https://api.github.com",
   "exclude_repos": []
 }

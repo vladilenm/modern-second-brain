@@ -38,6 +38,17 @@ DEFAULTS = {
         "claude_code": {"enabled": True, "roots": ["~/.claude/projects"], "idle_minutes": 30},
         "codex": {"enabled": True, "roots": ["~/.codex/sessions", "~/.codex/archived_sessions"], "idle_minutes": 30},
         "chatgpt_export": {"enabled": True, "idle_minutes": 1},
+        "github": {
+            "enabled": True,
+            "every_minutes": 60,
+            # Первый прогон забирает столько дней назад, дальше — с курсора.
+            "backfill_days": 730,
+            # None — `gh auth token`; gh ищем и вне PATH, launchd его не передаёт.
+            "token_command": None,
+            "api_base": "https://api.github.com",
+            # Шаблоны owner/name, допускается *: ["vladilenm/tbank-*"].
+            "exclude_repos": [],
+        },
     },
 }
 

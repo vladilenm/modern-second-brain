@@ -12,6 +12,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.parse
 import zipfile
 from pathlib import Path
 
@@ -26,6 +27,7 @@ from brain.connectors.base import ApiConnector, Batch, Record  # noqa: E402
 from brain.connectors.chatgpt_export import ChatGPTExportConnector  # noqa: E402
 from brain.connectors.claude_code import ClaudeCodeConnector  # noqa: E402
 from brain.connectors.codex import CodexConnector  # noqa: E402
+from brain.connectors.github import GitHubConnector  # noqa: E402
 
 
 def write_jsonl(path: Path, items) -> Path:
@@ -41,6 +43,7 @@ def make_cfg(tmp: Path) -> dict:
     cfg["sources"]["claude_code"]["roots"] = [str(tmp / "claude")]
     cfg["sources"]["codex"]["roots"] = [str(tmp / "codex")]
     cfg["llm"]["min_chars"] = 0  # старые тесты пересказа — на коротких текстах
+    cfg["sources"]["github"]["enabled"] = False  # в настоящий GitHub тесты не ходят
     return cfg
 
 
@@ -141,11 +144,12 @@ class ConnectorTests(unittest.TestCase):
 class RegistryTests(unittest.TestCase):
     def test_every_connector_is_described(self):
         reg = connectors.registry()
-        self.assertEqual([r["source"] for r in reg], ["claude_code", "codex", "chatgpt"])
-        self.assertEqual([r["connector"] for r in reg], ["claude_code", "codex", "chatgpt_export"])
+        self.assertEqual([r["source"] for r in reg], ["claude_code", "codex", "chatgpt", "github"])
+        self.assertEqual([r["connector"] for r in reg], ["claude_code", "codex", "chatgpt_export", "github"])
         for r in reg:
             self.assertTrue(r["title"] and r["about"], r)
-        self.assertEqual({r["type"] for r in reg}, {"file"})
+        types = {r["source"]: r["type"] for r in reg}
+        self.assertEqual((types["chatgpt"], types["github"]), ("file", "api"))
         self.assertTrue(dict((r["source"], r["hint"]) for r in reg)["chatgpt"])
 
     def test_names_come_from_registry(self):
@@ -392,6 +396,151 @@ class ApiSyncTests(unittest.TestCase):
         totals = self.run_sync(only="fake")
         self.assertEqual(totals["excluded"], 1)
         self.assertEqual([r[0] for r in self.conn.execute("SELECT external_id FROM records")], ["2"])
+
+
+class Pages(list):
+    """Ответ из нескольких страниц: FakeGitHub отдаёт их по ?page=N со ссылкой rel="next"."""
+
+
+class FakeGitHub(http.server.BaseHTTPRequestHandler):
+    """Фейковый REST API GitHub: ответ по пути запроса; число — код ошибки; нет пути — 404."""
+    routes: dict = {}
+    hits: list = []  # (путь, параметры, Authorization)
+
+    def do_GET(self):
+        path, _, query = self.path.partition("?")
+        params = urllib.parse.parse_qs(query)
+        FakeGitHub.hits.append((path, params, self.headers.get("Authorization")))
+        answer = FakeGitHub.routes.get(path)
+        link = None
+        if isinstance(answer, Pages):
+            page = int(params.get("page", ["1"])[0])
+            if page < len(answer):
+                link = f'<http://127.0.0.1:{self.server.server_port}{path}?page={page + 1}>; rel="next"'
+            answer = answer[page - 1]
+        if answer is None:
+            self.reply(404, {"message": "Not Found"})
+        elif isinstance(answer, int):
+            self.reply(answer, {"message": "ошибка"})
+        else:
+            self.reply(200, answer, link)
+
+    def reply(self, code, data, link=None):
+        body = json.dumps(data, ensure_ascii=False).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        if link:
+            self.send_header("Link", link)
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+GH_REPO_URL = "https://api.github.com/repos/vm/brain"
+
+
+def gh_issue():
+    return {"number": 5, "title": "Где хранить базу", "state": "closed", "user": {"login": "vm"},
+            "created_at": "2026-10-01T09:00:00Z", "updated_at": "2026-10-02T10:00:00Z",
+            "body": "Варианты: Postgres или SQLite", "html_url": "https://github.com/vm/brain/issues/5",
+            "repository_url": GH_REPO_URL}
+
+
+def gh_pr():
+    return {"number": 7, "title": "Поиск BM25", "state": "closed", "user": {"login": "vm"},
+            "created_at": "2026-10-10T09:00:00Z", "updated_at": "2026-10-12T00:00:00Z", "body": "",
+            "html_url": "https://github.com/vm/brain/pull/7", "repository_url": GH_REPO_URL,
+            "pull_request": {"merged_at": "2026-10-12T00:00:00Z"}}
+
+
+def gh_discussion_routes():
+    return {
+        "/user": {"login": "vm"},
+        "/user/repos": [],
+        "/search/issues": Pages([{"total_count": 2, "items": [gh_issue()]},
+                                 {"total_count": 2, "items": [gh_pr()]}]),
+        "/repos/vm/brain/issues/5/comments": [
+            {"user": {"login": "anna"}, "created_at": "2026-10-02T10:00:00Z", "body": "Давайте на SQLite"}],
+        "/repos/vm/brain/issues/7/comments": [],
+        "/repos/vm/brain/pulls/7/reviews": [
+            {"user": {"login": "anna"}, "state": "CHANGES_REQUESTED", "submitted_at": "2026-10-11T09:00:00Z",
+             "body": "Нужны тесты"},
+            {"user": {"login": "anna"}, "state": "COMMENTED", "submitted_at": "2026-10-11T09:01:00Z", "body": ""}],
+        "/repos/vm/brain/pulls/7/comments": [
+            {"user": None, "created_at": "2026-10-11T09:00:30Z", "path": "brain/db.py", "body": "Тут нужен индекс"}],
+    }
+
+
+class GitHubCase(unittest.TestCase):
+    """Общая обвязка: фейковый GitHub на свободном порту и конфиг, который ходит только в него."""
+
+    def setUp(self):
+        self.server = http.server.HTTPServer(("127.0.0.1", 0), FakeGitHub)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+        FakeGitHub.routes, FakeGitHub.hits = gh_discussion_routes(), []
+        self.cfg = make_cfg(Path(tempfile.mkdtemp()))
+        self.cfg["sources"]["github"].update(
+            enabled=True, api_base=f"http://127.0.0.1:{self.server.server_port}",
+            token_command=[sys.executable, "-c", "print('test-token')"])
+        self.conn = db.connect(self.cfg["db_path"])
+
+    def fetch(self, cursor=None):
+        return list(GitHubConnector(self.cfg).fetch(cursor))
+
+    def search_queries(self):
+        return [p["q"][0] for path, p, _ in FakeGitHub.hits if path == "/search/issues" and "q" in p]
+
+
+class GitHubDiscussionTests(GitHubCase):
+    def test_discussions_become_records(self):
+        batches = self.fetch()
+        records = {r.external_id: r for b in batches for r in b.records}
+        self.assertEqual(sorted(records), ["issue:vm/brain#5", "pr:vm/brain#7"])
+        issue, pr = records["issue:vm/brain#5"], records["pr:vm/brain#7"]
+        self.assertEqual((issue.kind, issue.project, issue.title),
+                         ("discussion", "vm/brain", "vm/brain#5: Где хранить базу"))
+        self.assertEqual((issue.started_at, issue.updated_at), ("2026-10-01T09:00:00Z", "2026-10-02T10:00:00Z"))
+        self.assertEqual(issue.location, "https://github.com/vm/brain/issues/5")
+        for text in ("Issue vm/brain#5: Где хранить базу", "Статус: закрыт", "Варианты: Postgres или SQLite",
+                     "anna (2026-10-02): Давайте на SQLite"):
+            self.assertIn(text, issue.body)
+        for text in ("PR vm/brain#7: Поиск BM25", "Статус: влит", "anna (2026-10-11), ревью «нужны правки»: Нужны тесты",
+                     "ghost (2026-10-11) к brain/db.py: Тут нужен индекс"):
+            self.assertIn(text, pr.body)
+        self.assertLess(pr.body.index("Нужны тесты"), pr.body.index("Тут нужен индекс"))  # по времени
+        self.assertNotIn("ревью:", pr.body)  # пустое ревью-обёртка пропущено
+        self.assertEqual(json.loads(batches[-1].cursor)["issues"], "2026-10-12T00:00:00Z")
+        self.assertTrue(all(auth == "Bearer test-token" for _, _, auth in FakeGitHub.hits))
+        [query] = self.search_queries()
+        self.assertTrue(query.startswith("involves:vm updated:>="))
+
+    def test_cursor_feeds_search_query(self):
+        self.fetch(json.dumps({"issues": "2026-10-02T10:00:00Z", "repos": "2026-10-02T10:00:00Z"}))
+        self.assertEqual(self.search_queries(), ["involves:vm updated:>=2026-10-02T10:00:00Z"])
+
+    def test_excluded_repo_discussions_are_skipped(self):
+        self.cfg["sources"]["github"]["exclude_repos"] = ["VM/br*"]
+        batches = self.fetch()
+        self.assertEqual([r for b in batches for r in b.records], [])
+        self.assertNotIn("/repos/vm/brain/issues/5/comments", [p for p, _, _ in FakeGitHub.hits])
+
+    def test_no_access(self):
+        FakeGitHub.routes["/user"] = 401
+        with self.assertRaisesRegex(RuntimeError, "gh auth login"):
+            self.fetch()
+        self.cfg["sources"]["github"]["token_command"] = [sys.executable, "-c", "import sys; sys.exit(1)"]
+        with self.assertRaisesRegex(RuntimeError, "gh auth login"):
+            self.fetch()
+
+    def test_rate_limit(self):
+        FakeGitHub.routes["/search/issues"] = 429
+        with self.assertRaisesRegex(RuntimeError, "исчерпан лимит"):
+            self.fetch()
 
 
 class FakeLLM(http.server.BaseHTTPRequestHandler):

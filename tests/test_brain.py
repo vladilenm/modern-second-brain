@@ -29,7 +29,7 @@ from brain.connectors.base import ApiConnector, Batch, Record  # noqa: E402
 from brain.connectors.chatgpt_export import ChatGPTExportConnector  # noqa: E402
 from brain.connectors.claude_code import ClaudeCodeConnector  # noqa: E402
 from brain.connectors.codex import CodexConnector  # noqa: E402
-from brain.connectors.github import GitHubConnector  # noqa: E402
+from brain.connectors.github import Fatal, GitHubConnector  # noqa: E402
 
 
 def write_jsonl(path: Path, items) -> Path:
@@ -668,8 +668,9 @@ class GitHubRepoTests(GitHubCase):
             s.bind(("127.0.0.1", 0))
             port = s.getsockname()[1]  # порт свободен: на нём никто не слушает
         self.cfg["sources"]["github"]["api_base"] = f"http://127.0.0.1:{port}"
-        with self.assertRaisesRegex(RuntimeError, "нет связи"):
+        with self.assertRaisesRegex(RuntimeError, "нет связи") as ctx:
             self.fetch()
+        self.assertIsInstance(ctx.exception, Fatal)  # обрыв связи не вина репозитория: без подсказки про exclude_repos
 
 
 class FakeLLM(http.server.BaseHTTPRequestHandler):

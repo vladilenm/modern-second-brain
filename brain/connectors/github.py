@@ -38,7 +38,7 @@ class NotFound(Exception):
 
 
 class Fatal(RuntimeError):
-    """Нет доступа или исчерпан лимит — дальше в этом прогоне идти бессмысленно."""
+    """Нет доступа, лимит или связи — дальше в этом прогоне идти бессмысленно."""
 
 
 def gh_token_command() -> List[str]:
@@ -98,7 +98,7 @@ class GitHubAPI:
             raise RuntimeError(f"GitHub: HTTP {exc.code} на {url}") from None
         except (urllib.error.URLError, OSError) as exc:
             # нет сети, таймаут, обрыв соединения
-            raise RuntimeError(f"GitHub: нет связи ({getattr(exc, 'reason', exc)})") from None
+            raise Fatal(f"GitHub: нет связи ({getattr(exc, 'reason', exc)})") from None
 
     def _url(self, path: str, params: Optional[dict] = None) -> str:
         return self.base + path + ("?" + urllib.parse.urlencode(params) if params else "")

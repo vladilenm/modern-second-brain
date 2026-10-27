@@ -131,16 +131,22 @@ class GitHubConnector(ApiConnector):
         # остаток заберёт следующий прогон с курсора.
         found = api.items("/search/issues", {"q": f"involves:{login} updated:>={pos['issues']}",
                                              "sort": "updated", "order": "asc"})
+        start = pos["issues"]
         batch: List[Record] = []
         for item in found:
             repo = item["repository_url"].split("/repos/", 1)[1]
             if not self.excludes(repo):
-                batch.append(self._discussion(api, repo, item))
+                try:
+                    batch.append(self._discussion(api, repo, item))
+                except NotFound:
+                    # Обсуждение пропало вместе с репозиторием — не повод стопорить источник.
+                    pass
             pos["issues"] = item["updated_at"]
             if len(batch) >= DISCUSSION_BATCH:
                 yield Batch(batch, json.dumps(pos, sort_keys=True))
                 batch = []
-        if batch:
+        # Курсор сохраняем и тогда, когда хвост прогона весь отфильтрован: иначе он переберётся заново.
+        if batch or pos["issues"] != start:
             yield Batch(batch, json.dumps(pos, sort_keys=True))
 
     def _discussion(self, api: GitHubAPI, repo: str, item: dict) -> Record:

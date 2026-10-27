@@ -528,6 +528,13 @@ class GitHubDiscussionTests(GitHubCase):
         batches = self.fetch()
         self.assertEqual([r for b in batches for r in b.records], [])
         self.assertNotIn("/repos/vm/brain/issues/5/comments", [p for p, _, _ in FakeGitHub.hits])
+        self.assertEqual(json.loads(batches[-1].cursor)["issues"], "2026-10-12T00:00:00Z")  # курсор сохранён
+
+    def test_missing_discussion_is_skipped(self):
+        del FakeGitHub.routes["/repos/vm/brain/issues/5/comments"]  # 404: обсуждение или репозиторий пропали
+        batches = self.fetch()
+        self.assertEqual(sorted(r.external_id for b in batches for r in b.records), ["pr:vm/brain#7"])
+        self.assertEqual(json.loads(batches[-1].cursor)["issues"], "2026-10-12T00:00:00Z")
 
     def test_no_access(self):
         FakeGitHub.routes["/user"] = 401

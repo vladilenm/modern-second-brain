@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import base64
 import fnmatch
 import json
 import os
@@ -26,6 +27,10 @@ DISCUSSION_BATCH = 20
 GH_FALLBACKS = ("/opt/homebrew/bin/gh", "/usr/local/bin/gh")
 NEXT_LINK = re.compile(r'<([^>]+)>;\s*rel="next"')
 REVIEW_STATE = {"APPROVED": "одобрено", "CHANGES_REQUESTED": "нужны правки", "DISMISSED": "отозвано"}
+TRAILER = re.compile(r"^[ \t]*Co-Authored-By:.*\n?", re.I | re.M)
+MAX_COMMIT_CHARS = 4000
+MONTHS = ("январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август",
+          "сентябрь", "октябрь", "ноябрь", "декабрь")
 
 
 class NotFound(Exception):
@@ -53,6 +58,11 @@ def read_token(command: Optional[List[str]]) -> str:
 def login_of(obj: Optional[dict]) -> str:
     # Удалённые аккаунты GitHub отдаёт как user: null.
     return (obj or {}).get("login") or "ghost"
+
+
+def month_start(iso: str) -> str:
+    """2026-10-20T12:00:00Z → 2026-10-01T00:00:00Z."""
+    return iso[:7] + "-01T00:00:00Z"
 
 
 class GitHubAPI:
@@ -115,6 +125,7 @@ class GitHubConnector(ApiConnector):
         login = api.get("/user")["login"]
         pos = self._position(cursor)
         yield from self._discussions(api, login, pos)
+        yield from self._repos(api, login, pos)
 
     def _position(self, cursor: Optional[str]) -> dict:
         start = to_iso((datetime.now(timezone.utc) - timedelta(days=self.backfill_days)).timestamp())
@@ -184,4 +195,78 @@ class GitHubConnector(ApiConnector):
             location=item.get("html_url"),
             project=repo,
             kind="discussion",
+        )
+
+    def _repos(self, api: GitHubAPI, login: str, pos: dict) -> Iterator[Batch]:
+        """Репозитории, в которые пушили после курсора, по одному на пачку: их месяцы коммитов и README."""
+        since = month_start(pos["repos"])  # месяцы начиная с месяца курсора собираем заново целиком
+        repos = [r for r in api.items("/user/repos", {"affiliation": "owner,collaborator,organization_member"})
+                 if not r.get("fork") and (r.get("pushed_at") or "") >= pos["repos"]
+                 and not self.excludes(r["full_name"])]
+        for repo in sorted(repos, key=lambda r: r["pushed_at"]):
+            records = self._commit_months(api, login, repo, since)
+            readme = self._readme(api, repo)
+            if readme:
+                records.append(readme)
+            pos["repos"] = repo["pushed_at"]
+            yield Batch(records, json.dumps(pos, sort_keys=True))
+
+    def _commit_months(self, api: GitHubAPI, login: str, repo: dict, since: str) -> List[Record]:
+        name = repo["full_name"]
+        months = {}  # "2026-10" → [(когда, короткий хеш, сообщение)]
+        try:
+            for c in api.items(f"/repos/{name}/commits", {"author": login, "since": since}):
+                when = to_iso(((c.get("commit") or {}).get("committer") or {}).get("date"))
+                if when:
+                    message = TRAILER.sub("", c["commit"].get("message") or "").strip()
+                    months.setdefault(when[:7], []).append((when, c["sha"][:7], message))
+        except NotFound:
+            return []  # пустой репозиторий
+        records = []
+        for month, commits in sorted(months.items()):
+            commits.sort()
+            entries = []
+            for when, sha, message in commits:
+                subject, _, rest = message.partition("\n")
+                entry = f"{when[:10]} {sha} {subject}"
+                if rest.strip():
+                    entry += "\n" + clip(rest.strip(), MAX_COMMIT_CHARS)
+                entries.append(entry)
+            year, mon = month.split("-")
+            records.append(Record(
+                source=self.source,
+                external_id=f"commits:{name}:{month}",
+                title=f"{name} — коммиты за {MONTHS[int(mon) - 1]} {year}",
+                body="\n\n".join(entries),
+                updated_at=commits[-1][0],
+                started_at=commits[0][0],
+                location=f"{repo['html_url']}/commits",
+                project=name,
+                kind="changelog",
+            ))
+        return records
+
+    def _readme(self, api: GitHubAPI, repo: dict) -> Optional[Record]:
+        name = repo["full_name"]
+        try:
+            data = api.get(f"/repos/{name}/readme")
+        except NotFound:
+            return None
+        text = base64.b64decode(data.get("content") or "").decode("utf-8", errors="replace").strip()
+        head = [f"Репозиторий {name}" + (" (приватный)" if repo.get("private") else "")]
+        if repo.get("description"):
+            head.append(repo["description"])
+        if repo.get("topics"):
+            head.append("Темы: " + ", ".join(repo["topics"]))
+        return Record(
+            source=self.source,
+            external_id=f"readme:{name}",
+            title=f"{name} — README",
+            body="\n".join(head) + "\n\n" + clip(text),
+            # Если README не менялся, хеш тот же и запись не трогается.
+            updated_at=to_iso(repo["pushed_at"]),
+            started_at=to_iso(repo.get("created_at")),
+            location=repo.get("html_url"),
+            project=name,
+            kind="document",
         )

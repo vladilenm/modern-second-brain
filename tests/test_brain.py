@@ -1,6 +1,7 @@
 """Тесты: python3 -m unittest discover -s tests (из корня проекта)."""
 from __future__ import annotations
 
+import base64
 import copy
 import http.server
 import json
@@ -548,6 +549,95 @@ class GitHubDiscussionTests(GitHubCase):
         FakeGitHub.routes["/search/issues"] = 429
         with self.assertRaisesRegex(RuntimeError, "исчерпан лимит"):
             self.fetch()
+
+
+def gh_repo(name="vm/brain", **extra):
+    repo = {"full_name": name, "fork": False, "private": True, "pushed_at": "2026-10-20T12:00:00Z",
+            "created_at": "2025-01-01T00:00:00Z", "html_url": f"https://github.com/{name}",
+            "description": "Второй мозг", "topics": ["sqlite", "mcp"]}
+    repo.update(extra)
+    return repo
+
+
+def gh_commit(date, sha, message):
+    return {"sha": sha + "0" * (40 - len(sha)), "commit": {"message": message, "committer": {"date": date}}}
+
+
+def gh_repo_routes():
+    readme = base64.b64encode("# Brain\n\nЗапуск: bin/brain sync".encode()).decode()
+    return {
+        "/user/repos": Pages([[gh_repo("vm/fork", fork=True), gh_repo()],
+                              [gh_repo("vm/trade-bot", pushed_at="2026-10-21T00:00:00Z"),
+                               gh_repo("vm/empty", pushed_at="2026-10-19T00:00:00Z")]]),
+        "/repos/vm/brain/commits": [
+            gh_commit("2026-10-05T10:00:00Z", "bbb2222", "Поиск BM25\n\nВеса колонок: карточка важнее текста"),
+            gh_commit("2026-09-30T23:00:00Z", "aaa1111",
+                      "Старт базы\n\nCo-Authored-By: Claude <noreply@anthropic.com>")],
+        "/repos/vm/brain/readme": {"content": readme, "encoding": "base64"},
+        "/repos/vm/trade-bot/commits": [gh_commit("2026-10-21T00:00:00Z", "ccc3333", "Сделка")],
+        "/repos/vm/empty/commits": 409,
+    }
+
+
+class GitHubRepoTests(GitHubCase):
+    def setUp(self):
+        super().setUp()
+        FakeGitHub.routes.update(gh_repo_routes())
+        self.cfg["sources"]["github"]["exclude_repos"] = ["vm/trade-*"]
+
+    def sync(self):
+        return sync_mod.sync(self.cfg, self.conn, only="github", log=lambda *_: None)["github"]
+
+    def test_commit_months_and_readme(self):
+        batches = self.fetch()
+        records = {r.external_id: r for b in batches for r in b.records}
+        self.assertEqual(sorted(k for k in records if not k.startswith(("pr:", "issue:"))),
+                         ["commits:vm/brain:2026-09", "commits:vm/brain:2026-10", "readme:vm/brain"])
+        october = records["commits:vm/brain:2026-10"]
+        self.assertEqual((october.kind, october.title, october.project),
+                         ("changelog", "vm/brain — коммиты за октябрь 2026", "vm/brain"))
+        self.assertEqual(october.body, "2026-10-05 bbb2222 Поиск BM25\nВеса колонок: карточка важнее текста")
+        self.assertEqual(records["commits:vm/brain:2026-09"].body, "2026-09-30 aaa1111 Старт базы")
+        readme = records["readme:vm/brain"]
+        self.assertEqual((readme.kind, readme.updated_at), ("document", "2026-10-20T12:00:00Z"))
+        for text in ("Репозиторий vm/brain (приватный)", "Второй мозг", "Темы: sqlite, mcp", "Запуск: bin/brain sync"):
+            self.assertIn(text, readme.body)
+        self.assertEqual(json.loads(batches[-1].cursor)["repos"], "2026-10-20T12:00:00Z")
+        paths = [p for p, _, _ in FakeGitHub.hits]
+        self.assertNotIn("/repos/vm/fork/commits", paths)
+        self.assertNotIn("/repos/vm/trade-bot/commits", paths)
+
+    def test_sync_is_incremental(self):
+        first = self.sync()
+        self.assertEqual((first["new"], first["errors"]), (5, 0))  # 2 обсуждения, 2 месяца, README
+        again = self.sync()
+        self.assertEqual((again["new"], again["changed"]), (0, 0))
+        FakeGitHub.routes["/repos/vm/brain/commits"].insert(
+            0, gh_commit("2026-10-25T08:00:00Z", "ddd4444", "Панель базы"))
+        FakeGitHub.routes["/user/repos"][0][1]["pushed_at"] = "2026-10-25T08:00:00Z"
+        FakeGitHub.hits.clear()
+        third = self.sync()
+        self.assertEqual((third["new"], third["changed"]), (0, 1))  # пересобран только октябрь
+        [since] = [p["since"][0] for path, p, _ in FakeGitHub.hits if path == "/repos/vm/brain/commits"]
+        self.assertEqual(since, "2026-10-01T00:00:00Z")
+        body = self.conn.execute(
+            "SELECT body FROM records WHERE external_id = 'commits:vm/brain:2026-10'").fetchone()[0]
+        self.assertIn("ddd4444 Панель базы", body)
+
+    def test_excluded_repo_records_are_purged(self):
+        db.upsert(self.conn, Record("github", "readme:vm/trade-bot", "vm/trade-bot — README", "старое",
+                                    "2026-10-01T00:00:00Z", project="vm/trade-bot", kind="document"))
+        self.conn.commit()
+        self.sync()
+        self.assertIsNone(self.conn.execute("SELECT id FROM records WHERE project = 'vm/trade-bot'").fetchone())
+
+    def test_failure_keeps_saved_discussions(self):
+        FakeGitHub.routes["/repos/vm/brain/commits"] = 500
+        totals = self.sync()
+        self.assertEqual((totals["new"], totals["errors"]), (2, 1))
+        self.assertEqual(json.loads(db.get_cursor(self.conn, "github"))["issues"], "2026-10-12T00:00:00Z")
+        error = self.conn.execute("SELECT last_error FROM sync_state WHERE source = 'github'").fetchone()[0]
+        self.assertIn("HTTP 500", error)
 
 
 class FakeLLM(http.server.BaseHTTPRequestHandler):

@@ -17,6 +17,8 @@
     "claude_code": {"enabled": true},
     "codex": {"enabled": true},
     "chatgpt_export": {"enabled": true},
-    "github": {"enabled": true, "every_minutes": 60, "backfill_days": 730, "exclude_repos": []}
+    "github": {"enabled": true, "every_minutes": 60, "backfill_days": 730, "exclude_repos": []},
+    "gmail": {"enabled": false, "address": "", "every_minutes": 15, "backfill_days": 730, "summarize": true},
+    "yandex_mail": {"enabled": false, "address": "", "every_minutes": 15, "backfill_days": 730, "summarize": true}
   }
 }

@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Второй мозг · база</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&family=Spectral:ital,wght@0,300;0,400;0,500;1,300;1,400&display=swap" rel="stylesheet">
+<style>/*__CSS__*/</style>
+</head>
+<body>
+<main class="page">
+  <header>
+    <p class="label">Второй мозг · <span id="db-path"></span></p>
+    <h1>Что лежит в базе</h1>
+    <p class="lede" id="lede"></p>
+  </header>
+
+  <section aria-labelledby="s1">
+    <p class="label" id="s1">01 / Сводка</p>
+    <div class="tiles" id="tiles"></div>
+  </section>
+
+  <section aria-labelledby="s2">
+    <p class="label" id="s2">02 / Источники</p>
+    <div class="card table-wrap">
+      <table>
+        <thead><tr>
+          <th>Источник</th><th class="n">Записей</th><th class="n">С карточкой</th><th class="n">Без карточки</th>
+          <th class="n">Ещё идут</th><th class="n">Пропущено</th><th>Последний разговор</th><th>Синхронизация</th>
+        </tr></thead>
+        <tbody id="sources"></tbody>
+      </table>
+    </div>
+    <p class="card-sub">«Ещё идут» — разговоры, где меньше 30 минут назад что-то происходило: их заберёт одна из следующих синхронизаций. «Пропущено» — файлы, которые в базу не попадают: без твоих сообщений (фоновые и технические сессии) и из проектов, исключённых в <code>exclude_projects</code> в config.json.</p>
+  </section>
+
+  <section aria-labelledby="s3">
+    <p class="label" id="s3">03 / Активность</p>
+    <div class="card">
+      <div class="card-head">
+        <div>
+          <h2 class="card-title">Записи по неделям</h2>
+          <p class="card-sub" id="chart-sub"></p>
+        </div>
+      </div>
+      <div class="chart" id="chart" role="img"></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="s4">
+    <p class="label" id="s4">04 / Проекты</p>
+    <div class="card table-wrap">
+      <table>
+        <thead><tr><th>Проект</th><th class="n">Разговоров</th><th style="width:30%"></th><th class="n">С карточкой</th><th>Последний</th></tr></thead>
+        <tbody id="projects"></tbody>
+      </table>
+    </div>
+    <p class="card-sub">Нажми на проект, чтобы увидеть его разговоры ниже.</p>
+  </section>
+
+  <section aria-labelledby="s5" id="records-section">
+    <p class="label" id="s5">05 / Записи</p>
+    <div class="filters">
+      <input type="search" id="q" placeholder="Название, проект, ключевые слова, краткое содержание" aria-label="Фильтр записей">
+      <div class="seg" id="f-source" role="group" aria-label="Источник"></div>
+      <div class="seg" id="f-status" role="group" aria-label="Статус"></div>
+    </div>
+    <p class="count" id="count"></p>
+    <div class="card table-wrap">
+      <table class="records">
+        <thead><tr><th>Дата</th><th>Источник</th><th>Разговор</th><th>Проект</th><th>Карточка</th></tr></thead>
+        <tbody id="records"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<div class="tooltip" id="tip" hidden></div>
+
+<div id="graph" hidden></div>
+<script>
+const DATA = /*__DATA__*/null;
+/*__JS__*/
+</script>
+</body>
+</html>

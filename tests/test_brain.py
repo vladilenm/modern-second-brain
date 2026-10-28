@@ -317,6 +317,7 @@ class TopicsTests(unittest.TestCase):
                           (3, "рилс, монтаж", ""), (4, "postgresql, монтаж", "")])
         self.assertEqual(set(t.project_topics([1, 2, 3])[:2]), {"рилс", "субтитры"})
         self.assertNotIn("редкое1", t.project_topics([1, 2, 3])[:2])
+        self.assertNotIn("рилс", t.project_topics([1, 2, 3], exclude={"рилс"}))
 
 
 class DashboardTests(unittest.TestCase):
@@ -338,7 +339,34 @@ class DashboardTests(unittest.TestCase):
         self.assertFalse(data["records"][0]["card"])
         self.assertEqual([m["source"] for m in data["sources_meta"]], list(connectors.source_names()))
         self.assertEqual(sorted(data["files_seen"]), ["claude_code", "codex"])
+        self.assertEqual(data["records"][0]["pkey"], "p")
+        self.assertEqual(data["projects"]["p"]["paths"], ["~/p"])
+        self.assertIn("edges", data["graph"])
+        self.assertTrue(all("topics" in r for r in data["records"]))
+        self.assertIn('id="graph"', html)
         self.assertEqual(sorted(data["sync"]), sorted(connectors.source_names()))
+
+
+    def test_assemble_refuses_closing_script_in_js(self):
+        from brain import dashboard
+        with tempfile.TemporaryDirectory() as tmp:
+            web = Path(tmp)
+            (web / "index.html").write_text("<style>/*__CSS__*/</style><script>const DATA = /*__DATA__*/null;\n/*__JS__*/</script>")
+            (web / "style.css").write_text("")
+            for name in dashboard.SCRIPTS:
+                (web / name).write_text("const x = '</script>';" if name == "app.js" else "")
+            with self.assertRaises(ValueError):
+                dashboard.assemble(web)
+
+
+class ProjectKeyTests(unittest.TestCase):
+    def test_folder_and_repo_with_same_name_merge(self):
+        from brain.dashboard import project_key
+        self.assertEqual(project_key("~/Documents/vscode/club-landing")[0], project_key("vladilenm/club_landing")[0])
+        self.assertEqual(project_key("~/Documents/vscode/club-landing"), ("club-landing", "club-landing"))
+        self.assertEqual(project_key("~/Library/Application Support/Claude/scratch-workspaces/a/b/scratch-2026-10-21-f6"),
+                         ("scratch", "Черновики"))
+        self.assertEqual(project_key(None), ("", "без проекта"))
 
 
 class SyncTests(unittest.TestCase):

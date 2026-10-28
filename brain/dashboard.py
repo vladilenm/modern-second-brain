@@ -7,13 +7,17 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
+from collections import Counter, defaultdict
 from pathlib import Path
+from typing import Optional, Tuple
 
-from . import connectors, status as status_mod
+from . import connectors, status as status_mod, topics
 from .timeutil import now_iso
 
-TEMPLATE = Path(__file__).with_name("dashboard.html")
+WEB = Path(__file__).with_name("web")
+SCRIPTS = ("charts.js", "graph.js", "app.js")   # порядок важен: app.js пользуется первыми двумя
 PREVIEW_CHARS = 6000
 
 
@@ -39,6 +43,41 @@ def _files_seen(conn: sqlite3.Connection, cfg: dict) -> dict:
             prefixes = tuple(d.rstrip("/") + "/" for d in cls(cfg).roots())
             out[cls.source] = sum(1 for p in paths if prefixes and p.startswith(prefixes))
     return out
+
+
+def project_key(project: Optional[str]) -> Tuple[str, str]:
+    """Ключ и имя проекта. Папка ~/…/club-landing и репозиторий vladilenm/club_landing — один проект."""
+    p = (project or "").rstrip("/")
+    if "/scratch-workspaces/" in p:
+        return "scratch", "Черновики"
+    if not p:
+        return "", "без проекта"
+    name = p.split("/")[-1] or p
+    return re.sub(r"[\s_]+", "-", name.lower()), name
+
+
+def _name_parts(key: str, group: list) -> set:
+    """Части путей проекта («vladilenm», «club-landing») — чтобы не считать их темами."""
+    segs = {seg for _, p, _ in group for seg in (p or "").lower().replace("_", "-").split("/")}
+    return {key} | {seg for seg in segs if len(seg) >= 4}
+
+
+def _projects(records: list) -> dict:
+    """Темы и ключ проекта у каждой записи; проекты с путями и главными темами; рёбра графа."""
+    t = topics.build((r["id"], r["keywords"], r["title"]) for r in records)
+    groups = defaultdict(list)
+    for r in records:
+        key, name = project_key(r["project"])
+        r["pkey"] = key
+        r["topics"] = t.shown.get(r["id"], [])
+        groups[key].append((name, r["project"], r["id"]))
+    projects = {
+        key: {"name": Counter(name for name, _, _ in g).most_common(1)[0][0],
+              "paths": sorted({p for _, p, _ in g if p}),
+              "topics": t.project_topics([i for _, _, i in g], exclude=_name_parts(key, g))}
+        for key, g in groups.items()
+    }
+    return {"projects": projects, "graph": {"edges": [list(p) for p in t.pairs]}}
 
 
 def collect(conn: sqlite3.Connection, cfg: dict) -> dict:
@@ -86,13 +125,25 @@ def collect(conn: sqlite3.Connection, cfg: dict) -> dict:
         "batch_limit": int(cfg["llm"].get("batch_limit", 40)),
         "preview_chars": PREVIEW_CHARS,
         "records": records,
+        **_projects(records),
     }
+
+
+def assemble(web: Path = WEB) -> str:
+    """Шаблон страницы со вшитыми стилями и скриптами. «</script» внутри JS закрыл бы тег раньше времени."""
+    css = (web / "style.css").read_text(encoding="utf-8")
+    js = "\n".join((web / name).read_text(encoding="utf-8") for name in SCRIPTS)
+    if re.search(r"</style", css, re.I) or re.search(r"</script|<!--", js, re.I):
+        raise ValueError("в brain/web: «</script» в JS или «</style» в CSS сломает страницу")
+    html = (web / "index.html").read_text(encoding="utf-8")
+    return html.replace("/*__CSS__*/", css, 1).replace("/*__JS__*/", js, 1)
 
 
 def build(conn: sqlite3.Connection, cfg: dict) -> Path:
     # «</» внутри JSON закрыл бы тег <script> раньше времени.
     payload = json.dumps(collect(conn, cfg), ensure_ascii=False).replace("</", "<\\/")
-    html = TEMPLATE.read_text(encoding="utf-8").replace("/*__DATA__*/null", payload, 1)
+    # Данные вшиваются последними: в тексте разговоров может встретиться и «/*__JS__*/».
+    html = assemble().replace("/*__DATA__*/null", payload, 1)
     out = Path(cfg["db_path"]).expanduser().parent / "dashboard.html"
     tmp = out.with_name(out.name + ".tmp")
     tmp.write_text(html, encoding="utf-8")

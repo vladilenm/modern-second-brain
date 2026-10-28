@@ -68,9 +68,12 @@ class Topics:
     idf: Dict[str, float]
     display: Dict[str, str]
 
-    def project_topics(self, ids: List[int], limit: int = 5) -> List[str]:
-        """Темы проекта: повторяющиеся в его записях важнее, внутри — по «число записей × idf»."""
-        count = Counter(k for i in ids for k in self.keys.get(i, []))
+    def project_topics(self, ids: List[int], limit: int = 5, exclude: Iterable[str] = ()) -> List[str]:
+        """Темы проекта: повторяющиеся в его записях важнее, внутри — по «число записей × idf».
+        exclude — части имени проекта: его название среди тем ничего не говорит."""
+        parts = [x for x in exclude if x]
+        count = Counter(k for i in ids for k in self.keys.get(i, [])
+                        if not any(x in k.replace("_", "-") for x in parts))
         many = len(ids) >= 3
         ranked = sorted(count, key=lambda k: (many and count[k] < 2, -count[k] * self.idf[k], k))
         return [self.display[k] for k in ranked[:limit]]

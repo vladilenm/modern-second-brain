@@ -260,6 +260,26 @@ class MigrationTests(unittest.TestCase):
         db.connect(str(path)).close()  # повторное подключение не пытается добавить колонку второй раз
 
 
+class TopicsTests(unittest.TestCase):
+    def test_normalize_merges_word_forms(self):
+        from brain import topics
+        self.assertEqual({topics.normalize(w) for w in ("Рилс", "рилса", "рилсу", "рилсы")}, {"рилс"})
+        self.assertEqual(topics.normalize("клуба"), topics.normalize("клубу"))
+        self.assertEqual(topics.normalize("Skills"), topics.normalize("skill"))
+        self.assertEqual(topics.normalize("Claude  Code"), "claude code")
+        self.assertEqual(topics.normalize("next.js"), "next.js")
+
+    def test_normalize_drops_noise(self):
+        from brain import topics
+        for noise in ("2026-10-19", "19 октября 2026", "октябрь 2026", "1080×1920", "final.mp4", "lessons.md", "ок", ""):
+            self.assertIsNone(topics.normalize(noise), noise)
+
+    def test_record_topics_falls_back_to_title(self):
+        from brain import topics
+        self.assertEqual([k for k, _ in topics.record_topics("Рилс, рилса, 2026-10-19", "x")], ["рилс"])
+        self.assertEqual([k for k, _ in topics.record_topics(None, "Монтаж рилса для клуба")], ["монтаж", "рилс", "клуб"])
+
+
 class DashboardTests(unittest.TestCase):
     def test_page_embeds_data_safely(self):
         from brain import dashboard

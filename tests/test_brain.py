@@ -147,9 +147,9 @@ class RegistryTests(unittest.TestCase):
     def test_every_connector_is_described(self):
         reg = connectors.registry()
         self.assertEqual([r["source"] for r in reg],
-                         ["claude_code", "codex", "chatgpt", "github", "gmail"])
+                         ["claude_code", "codex", "chatgpt", "github", "gmail", "yandex_mail"])
         self.assertEqual([r["connector"] for r in reg],
-                         ["claude_code", "codex", "chatgpt_export", "github", "gmail"])
+                         ["claude_code", "codex", "chatgpt_export", "github", "gmail", "yandex_mail"])
         for r in reg:
             self.assertTrue(r["title"] and r["about"], r)
         types = {r["source"]: r["type"] for r in reg}

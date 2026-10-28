@@ -28,6 +28,7 @@ from brain.connectors.gmail import GmailConnector  # noqa: E402
 from brain.connectors.mailbox import AuthFailed, Fetched, Folder  # noqa: E402
 from brain.timeutil import to_iso  # noqa: E402
 from test_brain import make_cfg  # noqa: E402
+from brain.connectors.yandex_mail import YandexMailConnector  # noqa: E402
 
 
 class KeychainTests(unittest.TestCase):
@@ -461,6 +462,94 @@ class GmailTests(MailCase):
         self.cfg["sources"]["gmail"]["address"] = ""
         self.sync()
         self.assertEqual(self.last_error(), "Gmail: в config.json не задан address")
+
+
+YANDEX_FOLDERS = [Folder("INBOX", ["\\HasNoChildren"]), Folder("Sent", ["\\Sent"]), Folder("Spam", ["\\Junk"]),
+                  Folder("Работа", ["\\HasNoChildren"]), Folder("Drafts", ["\\Drafts"])]
+
+
+def yandex_mails():
+    """Моя переписка по заказу (a1 во входящих, мой ответ в «Отправленных»), рассылка (b1), помеченное письмо
+    в своей папке (c1), чужой ответ в чужой переписке (e2), спам со ссылкой на мою переписку."""
+    return [
+        FakeMail("INBOX", 1, eml("a1@shop.ru", "Магазин <help@shop.ru>", "me@yandex.ru", "Заказ 7781",
+                                 text="Ваш заказ собран.")),
+        FakeMail("Sent", 1, eml("a2@yandex.ru", "me@yandex.ru", "help@shop.ru", "Re: Заказ 7781",
+                                text="Когда доставка?", date="Thu, 01 Oct 2026 12:00:00 +0300",
+                                in_reply_to="a1@shop.ru", references=("a1@shop.ru",)),
+                 date="2026-10-01T09:00:00Z"),
+        FakeMail("INBOX", 2, eml("b1@news.ru", "news@news.ru", "me@yandex.ru", "Акции", text="Скидки.")),
+        FakeMail("Работа", 1, eml("c1@corp.ru", "Шеф <boss@corp.ru>", "me@yandex.ru", "План",
+                                  text="План на квартал."), flags=["\\Flagged"]),
+        FakeMail("INBOX", 3, eml("e2@list.ru", "bob@list.ru", "team@list.ru", "Re: Встреча", text="Буду.",
+                                 in_reply_to="e1@list.ru", references=("e1@list.ru",))),
+        FakeMail("Spam", 1, eml("s1@spam.ru", "spam@spam.ru", "me@yandex.ru", "Re: Заказ 7781", text="Купи.",
+                                in_reply_to="a1@shop.ru", references=("a1@shop.ru",))),
+    ]
+
+
+class YandexTests(MailCase):
+    connector = YandexMailConnector
+    source = "yandex_mail"
+    address = "me@yandex.ru"
+
+    def make_box(self):
+        return FakeMailbox(yandex_mails(), list(YANDEX_FOLDERS))
+
+    def test_first_run_takes_my_and_flagged_threads(self):
+        totals = self.sync()
+        self.assertEqual((totals["new"], totals["errors"]), (2, 0))
+        records = self.records()
+        self.assertEqual(sorted(records), ["root:a1@shop.ru", "root:c1@corp.ru"])
+        order = records["root:a1@shop.ru"]
+        self.assertEqual((order["kind"], order["title"], order["location"]), ("email", "Заказ 7781", None))
+        self.assertIn("Писем: 2", order["body"])
+        self.assertIn("я, 2026-10-01 09:00:\nКогда доставка?", order["body"])
+        self.assertNotIn("Купи.", order["body"])
+        self.assertNotIn("Spam", self.box.selects)
+        self.assertNotIn("Drafts", self.box.selects)
+        cursor = json.loads(db.get_cursor(self.conn, "yandex_mail"))
+        self.assertEqual(cursor["flagged"], ["c1@corp.ru"])
+        self.assertEqual(cursor["folders"]["INBOX"], {"validity": 1, "uid": 3})
+
+    def test_reply_rebuilds_thread_and_newsletter_costs_nothing(self):
+        self.sync()
+        self.box.mails += [
+            FakeMail("INBOX", 4, eml("a3@shop.ru", "Магазин <help@shop.ru>", "me@yandex.ru", "Re: Заказ 7781",
+                                     text="Завтра.", date="Fri, 02 Oct 2026 10:00:00 +0300",
+                                     in_reply_to="a2@yandex.ru", references=("a1@shop.ru", "a2@yandex.ru")),
+                     date="2026-10-02T07:00:00Z"),
+            FakeMail("INBOX", 5, eml("b2@news.ru", "news@news.ru", "me@yandex.ru", "Акции 2", text="Ещё скидки.")),
+        ]
+        self.box.calls.clear()
+        totals = self.sync()
+        self.assertEqual((totals["new"], totals["changed"]), (0, 1))
+        self.assertIn("Завтра.", self.records()["root:a1@shop.ru"]["body"])
+        self.assertFalse(any(5 in call[2] for call in self.box.calls))
+
+    def test_foreign_thread_is_checked_by_flags_only(self):
+        self.sync()
+        self.box.mails.append(FakeMail("INBOX", 4, eml("e3@list.ru", "ann@list.ru", "team@list.ru", "Re: Встреча",
+                                                       text="И я.", in_reply_to="e2@list.ru",
+                                                       references=("e1@list.ru", "e2@list.ru"))))
+        self.box.calls.clear()
+        totals = self.sync()
+        self.assertEqual((totals["new"], totals["changed"]), (0, 0))
+        self.assertIn(("fetch", "INBOX", (3, 4), False), self.box.calls)
+        self.assertNotIn(("fetch", "INBOX", (3, 4), True), self.box.calls)
+
+    def test_new_flag_adds_its_thread(self):
+        self.sync()
+        self.box.mails[2].flags.append("\\Flagged")
+        self.assertEqual(self.sync()["new"], 1)
+        self.assertIn("root:b1@news.ru", self.records())
+
+    def test_copy_in_another_folder_counted_once(self):
+        self.box.mails.append(FakeMail("Работа", 2, self.box.mails[1].raw, date="2026-10-01T09:00:00Z"))
+        self.sync()
+        body = self.records()["root:a1@shop.ru"]["body"]
+        self.assertIn("Писем: 2", body)
+        self.assertEqual(body.count("Когда доставка?"), 1)
 
 
 if __name__ == "__main__":

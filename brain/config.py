@@ -60,6 +60,16 @@ DEFAULTS = {
             "keychain_service": "brain-mail",
             "password_command": None,  # для тестов; None — /usr/bin/security
         },
+        "yandex_mail": {
+            "enabled": False,
+            "address": "",
+            "every_minutes": 15,
+            "backfill_days": 730,
+            "summarize": True,
+            "host": "imap.yandex.ru",
+            "keychain_service": "brain-mail",
+            "password_command": None,
+        },
     },
 }
 

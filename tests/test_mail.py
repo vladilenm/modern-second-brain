@@ -17,18 +17,15 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from brain import keychain  # noqa: E402
-from brain.redact import redact  # noqa: E402
-from brain.connectors import mailparse  # noqa: E402
-from brain.connectors import mailbox  # noqa: E402
-from brain import db  # noqa: E402
+from brain import db, keychain  # noqa: E402
 from brain import sync as sync_mod  # noqa: E402
-from brain.connectors import mail  # noqa: E402
+from brain.connectors import mail, mailbox, mailparse  # noqa: E402
 from brain.connectors.gmail import GmailConnector  # noqa: E402
 from brain.connectors.mailbox import AuthFailed, Fetched, Folder  # noqa: E402
+from brain.connectors.yandex_mail import YandexMailConnector  # noqa: E402
+from brain.redact import redact  # noqa: E402
 from brain.timeutil import to_iso  # noqa: E402
 from test_brain import make_cfg  # noqa: E402
-from brain.connectors.yandex_mail import YandexMailConnector  # noqa: E402
 
 
 class KeychainTests(unittest.TestCase):

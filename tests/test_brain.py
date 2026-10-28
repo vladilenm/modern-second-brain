@@ -475,6 +475,13 @@ class ApiSyncTests(unittest.TestCase):
         self.conn.execute("UPDATE sync_state SET last_run_at = '2000-01-01T00:00:00Z' WHERE source = 'fake'")
         self.assertIsNotNone(self.run_sync())
 
+    def test_failed_run_retries_next_sync(self):
+        FakeApi.pages = [RuntimeError("нет связи")]
+        self.assertEqual(self.run_sync()["errors"], 1)
+        FakeApi.pages = [([self.rec("1")], "1")]
+        self.assertEqual(self.run_sync()["new"], 1)  # ошибка не занимает час до следующего запуска
+        self.assertIsNone(self.run_sync())           # после успеха — снова по расписанию
+
     def test_rescan_starts_from_scratch(self):
         FakeApi.pages = [([self.rec("1")], "1")]
         self.run_sync()

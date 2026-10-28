@@ -2,6 +2,7 @@
 
 Файловые источники перечитываются по mtime и размеру файла, API-источники — с сохранённого курсора.
 У каждого источника своё расписание (every_minutes), а launchd запускает sync раз в 15 минут.
+Источник, чей прошлый прогон упал, запускается в следующем sync, не дожидаясь расписания.
 """
 from __future__ import annotations
 
@@ -52,8 +53,11 @@ def seconds_left(conn: sqlite3.Connection, connector, now: float) -> float:
     """Сколько ждать до следующего запуска источника; 0 — пора."""
     if connector.every_seconds <= 0:
         return 0.0
-    row = conn.execute("SELECT last_run_at FROM sync_state WHERE source = ?", (connector.name,)).fetchone()
-    last = parse(row["last_run_at"]) if row else None
+    row = conn.execute("SELECT last_run_at, last_error FROM sync_state WHERE source = ?",
+                       (connector.name,)).fetchone()
+    # Упавший прогон повторяем в следующем: ночью launchd будит Mac на секунды, сеть
+    # не успевает подняться, и без этого ошибка висела бы ещё час после пробуждения.
+    last = parse(row["last_run_at"]) if row and not row["last_error"] else None
     if last is None:
         return 0.0
     left = connector.every_seconds - (now - last.timestamp())

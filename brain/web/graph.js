@@ -139,7 +139,7 @@ function createGraph(canvas, opts) {
 
   // ---- Вид, фильтры, подсветка
   const view = { x: 0, y: 0, k: 1 };
-  let W = 0, H = 0, raf = 0, fitted = false;
+  let W = 0, H = 0, raf = 0, fitted = false, follow = null;
   let visible = () => true, topicLinks = true, marked = null, pinned = null, hover = null;
 
   function focusSet() {
@@ -231,7 +231,8 @@ function createGraph(canvas, opts) {
   function loop() {
     raf = 0;
     for (let i = 0; i < 3 && alpha > 0.004; i++) tick();
-    if (!fitted) fit(true);            // пока ты не двигал вид, граф вписан в рамку
+    if (follow) center(follow);
+    else if (!fitted) fit(true);       // пока ты не двигал вид, граф вписан в рамку
     draw();
     if (alpha > 0.004) raf = requestAnimationFrame(loop);
   }
@@ -255,12 +256,14 @@ function createGraph(canvas, opts) {
     view.y = padTop + (H - padTop - padBottom) / 2 - ((b.y0 + b.y1) / 2) * view.k;
     if (!silent) draw();
   }
+  function center(nd) { view.x = W / 2 - nd.x * view.k; view.y = H / 2 - nd.y * view.k; }
   function zoomAt(f, sx, sy) {
     const k = Math.max(0.15, Math.min(8, view.k * f));
     view.x = sx - (sx - view.x) * (k / view.k);
     view.y = sy - (sy - view.y) * (k / view.k);
     view.k = k;
     fitted = true;
+    follow = null;
     draw();
   }
 
@@ -314,10 +317,12 @@ function createGraph(canvas, opts) {
         const [x, y] = toWorld(sx, sy);
         drag.node.fx = x; drag.node.fy = y;
         fitted = true;                   // иначе вид уезжал бы из-под пальца
+        follow = null;
         heat(0.2);
       } else {
         view.x = drag.vx + sx - drag.sx; view.y = drag.vy + sy - drag.sy;
         fitted = true;
+        follow = null;
         draw();
       }
       return;
@@ -363,7 +368,7 @@ function createGraph(canvas, opts) {
 
   return {
     resize,
-    fit: () => { fitted = true; fit(); },
+    fit: () => { fitted = true; follow = null; fit(); },
     zoom: (f) => zoomAt(f, W / 2, H / 2),
     setFilter(fn) { visible = fn; draw(); },
     setTopicLinks(on) { topicLinks = on; draw(); },
@@ -372,15 +377,15 @@ function createGraph(canvas, opts) {
       const n = byId.get(id);
       if (!n) return;
       pinned = id;
-      const go = () => {
-        view.k = Math.max(view.k, 1.8);
-        view.x = W / 2 - n.x * view.k; view.y = H / 2 - n.y * view.k;
-        fitted = true;
-        draw();
-      };
-      if (alpha > 0.05) { const wait = () => (alpha > 0.05 ? requestAnimationFrame(wait) : go()); wait(); } else go();
+      // Приближаем в 1,6 раза от вписанного вида и держим узел в центре, пока раскладка не успокоится.
+      if (!fitted) fit(true);
+      view.k = Math.min(8, Math.max(2, view.k * 1.6));
+      fitted = true;
+      follow = n;
+      center(n);
+      draw();
     },
-    unpin() { pinned = null; draw(); },
+    unpin() { pinned = null; follow = null; draw(); },
     stats: () => ({ nodes: nodes.length, links: links.length }),
   };
 }

@@ -49,6 +49,17 @@ DEFAULTS = {
             # Шаблоны owner/name, допускается *: ["vladilenm/tbank-*"].
             "exclude_repos": [],
         },
+        "gmail": {
+            # Включается, когда задан адрес и пароль приложения лежит в связке ключей (README, «Почта»).
+            "enabled": False,
+            "address": "",
+            "every_minutes": 15,
+            "backfill_days": 730,
+            "summarize": True,
+            "host": "imap.gmail.com",
+            "keychain_service": "brain-mail",
+            "password_command": None,  # для тестов; None — /usr/bin/security
+        },
     },
 }
 

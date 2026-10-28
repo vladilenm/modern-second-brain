@@ -4,11 +4,15 @@
 from __future__ import annotations
 
 import imaplib
+import json
+import re
 import sys
+import tempfile
 import unittest
 from datetime import datetime
 from email.message import EmailMessage
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
@@ -17,6 +21,13 @@ from brain import keychain  # noqa: E402
 from brain.redact import redact  # noqa: E402
 from brain.connectors import mailparse  # noqa: E402
 from brain.connectors import mailbox  # noqa: E402
+from brain import db  # noqa: E402
+from brain import sync as sync_mod  # noqa: E402
+from brain.connectors import mail  # noqa: E402
+from brain.connectors.gmail import GmailConnector  # noqa: E402
+from brain.connectors.mailbox import AuthFailed, Fetched, Folder  # noqa: E402
+from brain.timeutil import to_iso  # noqa: E402
+from test_brain import make_cfg  # noqa: E402
 
 
 class KeychainTests(unittest.TestCase):
@@ -229,6 +240,227 @@ class MailboxTests(unittest.TestCase):
         box = mailbox.Mailbox("imap.example", "me@x.ru", "не тот", connect=lambda: imap)
         with self.assertRaises(mailbox.AuthFailed):
             box.open()
+
+
+class FakeMail:
+    """Письмо в поддельном ящике."""
+
+    def __init__(self, folder, uid, raw, flags=(), labels=(), thread="", date="2026-10-01T07:00:00Z"):
+        self.folder, self.uid, self.raw = folder, uid, raw
+        self.flags, self.labels, self.thread, self.date = list(flags), list(labels), thread, date
+
+
+class FakeMailbox:
+    """Поддельный ящик с интерфейсом Mailbox: письма в памяти, поиск — по смыслу, а не по синтаксису IMAP."""
+
+    def __init__(self, mails, folders, validity=1):
+        self.mails, self.folder_list, self.validity = mails, folders, validity
+        self.selected = None
+        self.selects, self.searches, self.calls = [], [], []
+        self.closed = False
+
+    def folders(self):
+        return self.folder_list
+
+    def select(self, name):
+        self.selected = name
+        self.selects.append(name)
+        uids = [m.uid for m in self.mails if m.folder == name]
+        return self.validity, (max(uids) + 1 if uids else 1)
+
+    def _here(self):
+        return [m for m in self.mails if m.folder == self.selected]
+
+    def uids_after(self, uid):
+        return sorted(m.uid for m in self._here() if m.uid > uid)
+
+    def uids_since(self, day, flagged=False):
+        floor = to_iso(day.timestamp())
+        return sorted(m.uid for m in self._here() if m.date >= floor and (not flagged or "\\Flagged" in m.flags))
+
+    def uids_in_thread(self, root):
+        out = []
+        for m in self._here():
+            p = mailparse.parse(m.raw)
+            if root in (p.message_id, p.in_reply_to) or root in p.references:
+                out.append(m.uid)
+        return sorted(out)
+
+    def gmail_search(self, query, thread=""):
+        self.searches.append(query)
+        after = re.search(r"after:(\d{4})/(\d\d)/(\d\d)", query)
+        floor = "-".join(after.groups()) if after else ""
+        return sorted(m.uid for m in self._here()
+                      if (not thread or m.thread == thread) and m.date[:10] >= floor
+                      and (("in:sent" in query and "\\Sent" in m.labels)
+                           or ("is:starred" in query and "\\Flagged" in m.flags)))
+
+    def gmail_thread_uids(self, thread):
+        return sorted(m.uid for m in self._here() if m.thread == thread)
+
+    def gmail_threads(self, uids):
+        wanted = set(uids)
+        return {m.uid: m.thread for m in self._here() if m.uid in wanted}
+
+    def headers(self, uids):
+        wanted = set(uids)
+        return {m.uid: mailparse.parse(m.raw) for m in self._here() if m.uid in wanted}
+
+    def fetch(self, uids, body=True):
+        wanted = set(uids)
+        self.calls.append(("fetch", self.selected, tuple(sorted(wanted)), body))
+        return [Fetched(uid=m.uid, raw=m.raw if body else b"", flags=list(m.flags), labels=list(m.labels),
+                        thread=m.thread, internal_date=m.date) for m in self._here() if m.uid in wanted]
+
+    def close(self):
+        self.closed = True
+
+
+ALL_MAIL = "[Gmail]/All Mail"
+
+
+def gmail_mails():
+    """«Вся почта»: моя переписка (тред 100), рассылка (200), помеченная рассылка (300), старая переписка (400)."""
+    return [
+        FakeMail(ALL_MAIL, 1, eml("a1@x.ru", "Анна <anna@x.ru>", "me@gmail.com", "Договор",
+                                  text="Пришлите договор, пожалуйста."),
+                 labels=["\\Inbox"], thread="100", date="2026-10-01T07:00:00Z"),
+        FakeMail(ALL_MAIL, 2, eml("a2@gmail.com", "me@gmail.com", "Анна <anna@x.ru>", "Re: Договор",
+                                  text="Отправил.\n\nчт, 1 окт. 2026 г. в 10:00, Анна <anna@x.ru>:\n"
+                                       "> Пришлите договор, пожалуйста.",
+                                  date="Thu, 01 Oct 2026 11:00:00 +0300", in_reply_to="a1@x.ru",
+                                  references=("a1@x.ru",)),
+                 labels=["\\Sent"], thread="100", date="2026-10-01T08:00:00Z"),
+        FakeMail(ALL_MAIL, 3, eml("n1@substack.com", "news@substack.com", "me@gmail.com", "Дайджест",
+                                  text="Новости недели."),
+                 labels=["\\Inbox"], thread="200", date="2026-10-05T07:00:00Z"),
+        FakeMail(ALL_MAIL, 4, eml("s1@substack.com", "dan@substack.com", "me@gmail.com", "Эссе",
+                                  text="Длинное эссе."),
+                 flags=["\\Flagged"], labels=["\\Inbox"], thread="300", date="2026-10-06T07:00:00Z"),
+        FakeMail(ALL_MAIL, 5, eml("o1@x.ru", "me@gmail.com", "old@x.ru", "Давно", text="Старое письмо.",
+                                  date="Sun, 01 Jan 2023 10:00:00 +0300"),
+                 labels=["\\Sent"], thread="400", date="2023-01-01T07:00:00Z"),
+    ]
+
+
+class MailCase(unittest.TestCase):
+    """Общая обвязка: конфиг с включённым ящиком, подставной пароль и поддельный ящик вместо IMAP."""
+    connector = None
+    source = ""
+    address = ""
+
+    def setUp(self):
+        self.cfg = make_cfg(Path(tempfile.mkdtemp()))
+        self.cfg["sources"][self.source].update(enabled=True, address=self.address,
+                                                password_command=[sys.executable, "-c", "print('app-pass')"])
+        self.conn = db.connect(self.cfg["db_path"])
+        self.box = self.make_box()
+        self.opened = []
+        patcher = mock.patch.object(self.connector, "open_mailbox", lambda conn, address, secret: self._open(address, secret))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _open(self, address, secret):
+        self.opened.append((address, secret))
+        return self.box
+
+    def sync(self):
+        return sync_mod.sync(self.cfg, self.conn, only=self.source, log=lambda *_: None)[self.source]
+
+    def records(self):
+        return {r["external_id"]: r for r in self.conn.execute("SELECT * FROM records WHERE source = ?", (self.source,))}
+
+    def last_error(self):
+        return self.conn.execute("SELECT last_error FROM sync_state WHERE source = ?", (self.source,)).fetchone()[0]
+
+
+class GmailTests(MailCase):
+    connector = GmailConnector
+    source = "gmail"
+    address = "me@gmail.com"
+
+    def make_box(self):
+        return FakeMailbox(gmail_mails(), [Folder("INBOX", ["\\HasNoChildren"]), Folder(ALL_MAIL, ["\\All"])])
+
+    def test_first_run_takes_my_and_starred_threads(self):
+        totals = self.sync()
+        self.assertEqual((totals["new"], totals["errors"]), (2, 0))
+        records = self.records()
+        self.assertEqual(sorted(records), ["thr:100", "thr:300"])
+        mine = records["thr:100"]
+        self.assertEqual((mine["kind"], mine["title"]), ("email", "Договор"))
+        self.assertEqual(mine["location"], "https://mail.google.com/mail/#all/64")
+        self.assertEqual(mine["body"].count("Пришлите договор"), 1)
+        self.assertIn("я, 2026-10-01 08:00:\nОтправил.", mine["body"])
+        self.assertEqual((mine["started_at"], mine["updated_at"]), ("2026-10-01T07:00:00Z", "2026-10-01T08:00:00Z"))
+        self.assertEqual(json.loads(db.get_cursor(self.conn, "gmail")), {"starred": ["300"], "uid": 5, "validity": 1})
+        self.assertEqual(self.opened, [("me@gmail.com", "app-pass")])
+        self.assertTrue(self.box.closed)
+
+    def test_reply_rebuilds_my_thread_and_new_newsletter_is_ignored(self):
+        self.sync()
+        self.box.mails += [
+            FakeMail(ALL_MAIL, 6, eml("a3@x.ru", "Анна <anna@x.ru>", "me@gmail.com", "Re: Договор",
+                                      text="Получила, спасибо.", date="Fri, 02 Oct 2026 10:00:00 +0300",
+                                      in_reply_to="a2@gmail.com", references=("a1@x.ru", "a2@gmail.com")),
+                     labels=["\\Inbox"], thread="100", date="2026-10-02T07:00:00Z"),
+            FakeMail(ALL_MAIL, 7, eml("n2@substack.com", "news@substack.com", "me@gmail.com", "Дайджест 2",
+                                      text="Ещё новости."),
+                     labels=["\\Inbox"], thread="500", date="2026-10-07T07:00:00Z"),
+        ]
+        totals = self.sync()
+        self.assertEqual((totals["new"], totals["changed"]), (0, 1))
+        self.assertIn("Получила, спасибо.", self.records()["thr:100"]["body"])
+        self.assertNotIn("thr:500", self.records())
+
+    def test_new_star_on_old_letter_adds_its_thread(self):
+        self.sync()
+        self.box.mails[2].flags.append("\\Flagged")
+        self.assertEqual(self.sync()["new"], 1)
+        self.assertIn("thr:200", self.records())
+
+    def test_interrupted_pass_is_repeated(self):
+        original = GmailConnector.thread
+
+        def flaky(connector, box, key):
+            if key == "300":
+                raise imaplib.IMAP4.abort("соединение оборвалось")
+            return original(connector, box, key)
+
+        with mock.patch.object(GmailConnector, "thread", flaky), mock.patch.object(mail, "THREAD_BATCH", 1):
+            totals = self.sync()
+        self.assertEqual((totals["new"], totals["errors"]), (1, 1))
+        self.assertEqual(db.get_cursor(self.conn, "gmail"), "{}")
+        self.assertIn("Gmail: ошибка IMAP", self.last_error())
+        totals = self.sync()
+        self.assertEqual((totals["new"], totals["changed"], totals["errors"]), (1, 0, 0))
+        self.assertIn("uid", json.loads(db.get_cursor(self.conn, "gmail")))
+
+    def test_uidvalidity_change_repeats_first_pass(self):
+        self.sync()
+        self.box.validity = 2
+        self.box.searches.clear()
+        totals = self.sync()
+        self.assertEqual((totals["new"], totals["changed"], totals["errors"]), (0, 0, 0))
+        self.assertTrue(any(q.startswith("(in:sent OR is:starred)") for q in self.box.searches))
+        self.assertEqual(json.loads(db.get_cursor(self.conn, "gmail"))["validity"], 2)
+
+    def test_errors_are_explained(self):
+        self.cfg["sources"]["gmail"]["password_command"] = [sys.executable, "-c", "import sys; sys.exit(44)"]
+        self.sync()
+        self.assertIn("Gmail: нет пароля в связке ключей", self.last_error())
+        self.assertIn("security add-generic-password -s brain-mail -a me@gmail.com -w", self.last_error())
+
+        def refuse(connector, address, secret):
+            raise AuthFailed("[AUTHENTICATIONFAILED]")
+
+        self.cfg["sources"]["gmail"]["password_command"] = [sys.executable, "-c", "print('app-pass')"]
+        with mock.patch.object(GmailConnector, "open_mailbox", refuse):
+            self.sync()
+        self.assertEqual(self.last_error(), "Gmail: почта не пускает — проверь пароль приложения")
+        self.cfg["sources"]["gmail"]["address"] = ""
+        self.sync()
+        self.assertEqual(self.last_error(), "Gmail: в config.json не задан address")
 
 
 if __name__ == "__main__":

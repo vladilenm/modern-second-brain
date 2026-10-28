@@ -10,8 +10,10 @@ from .chatgpt_export import ChatGPTExportConnector
 from .claude_code import ClaudeCodeConnector
 from .codex import CodexConnector
 from .github import GitHubConnector
+from .gmail import GmailConnector
 
-ALL = {c.name: c for c in (ClaudeCodeConnector, CodexConnector, ChatGPTExportConnector, GitHubConnector)}
+ALL = {c.name: c for c in (ClaudeCodeConnector, CodexConnector, ChatGPTExportConnector, GitHubConnector,
+                           GmailConnector)}
 
 
 def enabled(cfg: dict, only: str = None) -> List[Connector]:

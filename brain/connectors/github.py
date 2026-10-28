@@ -92,6 +92,7 @@ class GitHubAPI:
                 raw = resp.read().decode("utf-8")
                 return (json.loads(raw) if raw else None), resp.headers.get("Link") or ""
         except urllib.error.HTTPError as exc:
+            exc.close()  # иначе сокет ответа висит до сборки мусора
             if exc.code in (404, 409):
                 raise NotFound(url) from None
             if exc.code == 401:

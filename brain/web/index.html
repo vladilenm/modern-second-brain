@@ -3,83 +3,128 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Второй мозг · база</title>
+<title>Второй мозг</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Golos+Text:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&family=Spectral:ital,wght@0,300;0,400;0,500;1,300;1,400&display=swap" rel="stylesheet">
 <style>/*__CSS__*/</style>
 </head>
 <body>
-<main class="page">
-  <header>
-    <p class="label">Второй мозг · <span id="db-path"></span></p>
-    <h1>Что лежит в базе</h1>
-    <p class="lede" id="lede"></p>
-  </header>
+<a class="skip" href="#main">К содержимому</a>
 
-  <section aria-labelledby="s1">
-    <p class="label" id="s1">01 / Сводка</p>
-    <div class="tiles" id="tiles"></div>
-  </section>
+<header class="topbar">
+  <button class="topbar-menu" type="button" id="menu-open" aria-controls="side" aria-expanded="false">Меню</button>
+  <span class="topbar-title"><span class="brand-name">Второй мозг</span> <span class="topbar-tab" id="topbar-tab"></span></span>
+  <span class="state-dot" id="topbar-dot" role="img"></span>
+</header>
 
-  <section aria-labelledby="s2">
-    <p class="label" id="s2">02 / Источники</p>
-    <div class="card table-wrap">
-      <table>
-        <thead><tr>
-          <th>Источник</th><th class="n">Записей</th><th class="n">С карточкой</th><th class="n">Без карточки</th>
-          <th class="n">Ещё идут</th><th class="n">Пропущено</th><th>Последний разговор</th><th>Синхронизация</th>
-        </tr></thead>
-        <tbody id="sources"></tbody>
-      </table>
+<div class="app">
+  <nav class="side" id="side" aria-label="Разделы">
+    <a class="brand" href="#overview">Второй мозг</a>
+    <div class="search" role="search">
+      <label class="side-label" for="q-global">Поиск <kbd>/</kbd></label>
+      <input id="q-global" type="search" autocomplete="off" placeholder="рилс субтитры" aria-controls="q-results" aria-expanded="false">
+      <ul class="search-results" id="q-results" role="listbox" hidden></ul>
     </div>
-    <p class="card-sub">«Ещё идут» — разговоры, где меньше 30 минут назад что-то происходило: их заберёт одна из следующих синхронизаций. «Пропущено» — файлы, которые в базу не попадают: без твоих сообщений (фоновые и технические сессии) и из проектов, исключённых в <code>exclude_projects</code> в config.json.</p>
-  </section>
+    <ul class="nav">
+      <li><a href="#overview" data-tab="overview">Обзор</a></li>
+      <li><a href="#graph" data-tab="graph">Граф</a></li>
+      <li><a href="#projects" data-tab="projects">Проекты</a></li>
+      <li><a href="#records" data-tab="records">Записи</a></li>
+    </ul>
+    <div class="side-state" id="side-state" aria-live="polite"></div>
+  </nav>
+  <div class="side-scrim" id="side-scrim" hidden></div>
 
-  <section aria-labelledby="s3">
-    <p class="label" id="s3">03 / Активность</p>
-    <div class="card">
-      <div class="card-head">
-        <div>
-          <h2 class="card-title">Записи по неделям</h2>
-          <p class="card-sub" id="chart-sub"></p>
+  <main id="main" tabindex="-1">
+    <section class="tab" data-tab="overview" aria-labelledby="h-overview" hidden>
+      <header class="tab-head">
+        <p class="label">01 / Обзор</p>
+        <h1 class="display" id="h-overview" tabindex="-1">Что лежит в базе</h1>
+        <p class="lede" id="lede"></p>
+      </header>
+      <div class="kpis" id="kpis"></div>
+      <div class="card chart-card">
+        <div class="card-head">
+          <div>
+            <h2 class="card-title">Записи по времени</h2>
+            <p class="card-sub" id="weekly-sub"></p>
+          </div>
+          <div class="seg" id="weekly-range" role="group" aria-label="Период"></div>
+        </div>
+        <div class="legend" id="weekly-legend"></div>
+        <div class="chart" id="weekly" role="img"></div>
+      </div>
+      <div class="split">
+        <div class="card">
+          <h2 class="card-title">Где больше всего работы</h2>
+          <p class="card-sub">Проекты по числу записей</p>
+          <div class="hbars" id="top-projects"></div>
+        </div>
+        <div class="card">
+          <h2 class="card-title">Свежее</h2>
+          <p class="card-sub">Последние записи в базе</p>
+          <div class="fresh" id="fresh"></div>
         </div>
       </div>
-      <div class="chart" id="chart" role="img"></div>
-    </div>
-  </section>
+    </section>
 
-  <section aria-labelledby="s4">
-    <p class="label" id="s4">04 / Проекты</p>
-    <div class="card table-wrap">
-      <table>
-        <thead><tr><th>Проект</th><th class="n">Разговоров</th><th style="width:30%"></th><th class="n">С карточкой</th><th>Последний</th></tr></thead>
-        <tbody id="projects"></tbody>
-      </table>
-    </div>
-    <p class="card-sub">Нажми на проект, чтобы увидеть его разговоры ниже.</p>
-  </section>
+    <section class="tab tab-wide" data-tab="graph" aria-labelledby="h-graph" hidden>
+      <header class="tab-head">
+        <p class="label">02 / Граф</p>
+        <h1 class="headline" id="h-graph" tabindex="-1">Связи между записями</h1>
+        <p class="lede" id="graph-sub"></p>
+      </header>
+      <div class="graph-controls" id="graph-controls"></div>
+      <div class="graph-box">
+        <canvas id="graph" role="img"></canvas>
+        <div class="graph-zoom" role="group" aria-label="Масштаб">
+          <button type="button" data-zoom="in" aria-label="Приблизить">+</button>
+          <button type="button" data-zoom="out" aria-label="Отдалить">&minus;</button>
+          <button type="button" data-zoom="fit">Вписать</button>
+        </div>
+        <p class="graph-hint">Колесо или щипок меняют масштаб, перетаскивание двигает. Клик по точке открывает запись, по кольцу открывает проект.</p>
+      </div>
+    </section>
 
-  <section aria-labelledby="s5" id="records-section">
-    <p class="label" id="s5">05 / Записи</p>
-    <div class="filters">
-      <input type="search" id="q" placeholder="Название, проект, ключевые слова, краткое содержание" aria-label="Фильтр записей">
-      <div class="seg" id="f-source" role="group" aria-label="Источник"></div>
-      <div class="seg" id="f-status" role="group" aria-label="Статус"></div>
-    </div>
-    <p class="count" id="count"></p>
-    <div class="card table-wrap">
-      <table class="records">
-        <thead><tr><th>Дата</th><th>Источник</th><th>Разговор</th><th>Проект</th><th>Карточка</th></tr></thead>
-        <tbody id="records"></tbody>
-      </table>
-    </div>
-  </section>
-</main>
+    <section class="tab" data-tab="projects" aria-labelledby="h-projects" hidden>
+      <div id="projects-grid-view">
+        <header class="tab-head">
+          <p class="label">03 / Проекты</p>
+          <h1 class="headline" id="h-projects" tabindex="-1">Проекты</h1>
+          <p class="lede" id="projects-sub"></p>
+        </header>
+        <div class="filters">
+          <input type="search" id="q-projects" placeholder="Название или путь" aria-label="Фильтр проектов">
+          <div class="seg" id="projects-sort" role="group" aria-label="Сортировка"></div>
+        </div>
+        <div class="pgrid" id="pgrid"></div>
+      </div>
+      <div id="project-view" hidden></div>
+    </section>
+
+    <section class="tab" data-tab="records" aria-labelledby="h-records" hidden>
+      <header class="tab-head">
+        <p class="label">04 / Записи</p>
+        <h1 class="headline" id="h-records" tabindex="-1">Записи и здоровье базы</h1>
+      </header>
+      <h2 class="card-title section-title">Источники</h2>
+      <div class="card health" id="health"></div>
+      <p class="card-sub" id="health-note"></p>
+      <h2 class="card-title section-title">Все записи</h2>
+      <div class="filters">
+        <input type="search" id="q-records" placeholder="Название, проект, ключевые слова, пересказ" aria-label="Фильтр записей">
+        <div class="seg" id="f-source" role="group" aria-label="Источник"></div>
+        <div class="seg" id="f-status" role="group" aria-label="Статус"></div>
+      </div>
+      <p class="count" id="count"></p>
+      <div class="feed" id="feed"></div>
+    </section>
+  </main>
+</div>
 
 <div class="tooltip" id="tip" hidden></div>
 
-<div id="graph" hidden></div>
 <script>
 const DATA = /*__DATA__*/null;
 /*__JS__*/

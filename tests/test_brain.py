@@ -271,7 +271,8 @@ class TopicsTests(unittest.TestCase):
 
     def test_normalize_drops_noise(self):
         from brain import topics
-        for noise in ("2026-10-19", "19 октября 2026", "октябрь 2026", "1080×1920", "final.mp4", "lessons.md", "ок", ""):
+        for noise in ("2026-10-19", "19 октября 2026", "октябрь 2026", "1080×1920", "final.mp4", "lessons.md", "ок", "",
+                      "/Users/vladilen/Downloads/Telegram Desktop/x", "~/brain/inbox"):
             self.assertIsNone(topics.normalize(noise), noise)
 
     def test_record_topics_falls_back_to_title(self):

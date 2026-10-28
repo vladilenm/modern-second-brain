@@ -34,7 +34,7 @@ def _stem(word: str) -> str:
 
 def normalize(keyword: str) -> Optional[str]:
     k = " ".join((keyword or "").lower().replace("ё", "е").split()).strip(" .,;:!?«»\"'()")
-    if len(k) < 3 or DATE.match(k) or NUMBER.match(k) or FILE.match(k):
+    if len(k) < 3 or DATE.match(k) or NUMBER.match(k) or FILE.match(k) or k.startswith(("/", "~/")):
         return None
     return " ".join(_stem(w) for w in k.split(" "))
 

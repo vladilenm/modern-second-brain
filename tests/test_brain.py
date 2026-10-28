@@ -146,8 +146,10 @@ class ConnectorTests(unittest.TestCase):
 class RegistryTests(unittest.TestCase):
     def test_every_connector_is_described(self):
         reg = connectors.registry()
-        self.assertEqual([r["source"] for r in reg], ["claude_code", "codex", "chatgpt", "github"])
-        self.assertEqual([r["connector"] for r in reg], ["claude_code", "codex", "chatgpt_export", "github"])
+        self.assertEqual([r["source"] for r in reg],
+                         ["claude_code", "codex", "chatgpt", "github", "gmail", "yandex_mail"])
+        self.assertEqual([r["connector"] for r in reg],
+                         ["claude_code", "codex", "chatgpt_export", "github", "gmail", "yandex_mail"])
         for r in reg:
             self.assertTrue(r["title"] and r["about"], r)
         types = {r["source"]: r["type"] for r in reg}
@@ -794,8 +796,28 @@ class SummarizeTests(unittest.TestCase):
             server.shutdown()
             server.server_close()
 
+    def test_source_with_summarize_off_skips_model(self):
+        server = http.server.HTTPServer(("127.0.0.1", 0), FakeLLM)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            cfg = make_cfg(Path(tempfile.mkdtemp()))
+            cfg["llm"].update(base_url=f"http://127.0.0.1:{server.server_port}/v1", model="m")
+            cfg["sources"]["chatgpt_export"]["summarize"] = False  # ключ настроек ≠ ключу записей «chatgpt»
+            conn = db.connect(cfg["db_path"])
+            db.upsert(conn, Record("chatgpt", "c1", "Чат", "Длинный чат про отпуск. " * 20, "2026-10-20T00:00:00Z"))
+            db.upsert(conn, Record("codex", "x1", "Код", "Длинный разговор про код. " * 20, "2026-10-21T00:00:00Z"))
+            before = len(FakeLLM.requests)
+            self.assertEqual(summarize.summarize_pending(conn, cfg, log=lambda *_: None), (1, 0))
+            self.assertEqual(len(FakeLLM.requests) - before, 1)
+            chat = conn.execute("SELECT summary, summarized_at FROM records WHERE source = 'chatgpt'").fetchone()
+            self.assertEqual((chat["summary"], chat["summarized_at"]), (None, None))
+            self.assertEqual(summarize.pending_count(conn), 0)
+        finally:
+            server.shutdown()
+            server.server_close()
+
     def test_every_kind_has_prompt(self):
-        self.assertEqual(sorted(summarize.KINDS), ["changelog", "dialog", "discussion", "document"])
+        self.assertEqual(sorted(summarize.KINDS), ["changelog", "dialog", "discussion", "document", "email"])
         for kind, spec in summarize.KINDS.items():
             prompt = summarize.system_prompt(kind)
             self.assertIn(spec["what"], prompt)

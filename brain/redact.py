@@ -8,6 +8,24 @@ from __future__ import annotations
 import re
 
 MASK = "[секрет скрыт]"
+CARD_MASK = "[карта скрыта]"
+# 13–19 цифр подряд или группами через пробел/дефис. Проверка Луна отсекает номера заказов и телефоны.
+CARD = re.compile(r"(?<![\d-])(?:\d[ -]?){12,18}\d(?![\d-])")
+
+
+def _luhn(digits: str) -> bool:
+    total = 0
+    for i, ch in enumerate(reversed(digits)):
+        d = int(ch)
+        if i % 2:
+            d = d * 2 - 9 if d > 4 else d * 2
+        total += d
+    return total % 10 == 0
+
+
+def _card(match: "re.Match") -> str:
+    digits = re.sub(r"\D", "", match.group())
+    return CARD_MASK if 13 <= len(digits) <= 19 and _luhn(digits) else match.group()
 
 # (шаблон, замена). Где есть подпись («ключ:», api_key=, Bearer) — подпись оставляем.
 RULES = [
@@ -23,6 +41,7 @@ RULES = [
     (re.compile(r"(?i)\b(bearer\s+)[A-Za-z0-9._~+/=-]{16,}"), r"\1" + MASK),
     (re.compile(r"(?i)\b(api[_-]?key|secret|token|password|passwd|пароль|ключ)(\s*[:=]\s*)([\"']?)"
                 r"[A-Za-z0-9_\-./+=]{16,}\3"), r"\1\2\3" + MASK + r"\3"),
+    (CARD, _card),  # номера банковских карт — чаще всего в письмах
 ]
 
 

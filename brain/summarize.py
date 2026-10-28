@@ -13,7 +13,7 @@ import urllib.error
 import urllib.request
 from typing import Callable, Optional, Tuple
 
-from . import db
+from . import connectors, db
 from .timeutil import now_iso
 
 # Каркас один на все типы записей: карточка того же формата, поиск и MCP от типа не зависят.
@@ -65,6 +65,13 @@ KINDS = {
         "summary": "что это за проект или документ, для чего он, из каких частей состоит и как его запускают",
         "atoms": "команды установки и запуска, важные настройки и переменные окружения, ключевые факты "
                  "(стек, адреса, ограничения).",
+    },
+    "email": {
+        "label": "Переписка",
+        "what": "Перед тобой переписка по электронной почте: письма по порядку, цитаты предыдущих писем убраны.",
+        "summary": "кто с кем и о чём переписывался, о чём договорились, что осталось открытым",
+        "atoms": "договорённости и обещания, даты, суммы и цены, номера заказов, бронирований и договоров, "
+                 "контакты, точные формулировки решений, незакрытые задачи.",
     },
 }
 
@@ -147,20 +154,17 @@ def card_fields(card: dict) -> dict:
     }
 
 
+# Запись ждёт пересказа, если карточки нет или текст изменился после неё.
+PENDING = "(summarized_hash IS NULL OR summarized_hash != content_hash)"
+
+
 def pending_count(conn: sqlite3.Connection) -> int:
-    return conn.execute(
-        "SELECT COUNT(*) FROM records WHERE summarized_hash IS NULL OR summarized_hash != content_hash"
-    ).fetchone()[0]
+    return conn.execute(f"SELECT COUNT(*) FROM records WHERE {PENDING}").fetchone()[0]
 
 
-def skip_short(conn: sqlite3.Connection, min_chars: int) -> int:
-    """Записи короче min_chars модели не отправляем: пересказывать нечего, они ищутся по своему тексту.
-    Из очереди убираем; старую карточку (если запись раньше была длинной) стираем. summarized_at
-    не ставим — в «последние карточки» они не попадают."""
-    ids = [r["id"] for r in conn.execute(
-        """SELECT id FROM records
-           WHERE (summarized_hash IS NULL OR summarized_hash != content_hash) AND length(body) < ?""",
-        (min_chars,))]
+def _drop_from_queue(conn: sqlite3.Connection, ids) -> int:
+    """Убирает записи из очереди без карточки — они ищутся по своему тексту. Старую карточку (если запись
+    раньше пересказывали) стираем; summarized_at не ставим — в «последние карточки» они не попадают."""
     for rid in ids:
         conn.execute(
             """UPDATE records SET ai_title = NULL, summary = NULL, questions = NULL, keywords = NULL,
@@ -171,6 +175,24 @@ def skip_short(conn: sqlite3.Connection, min_chars: int) -> int:
         db.reindex(conn, rid)
     conn.commit()
     return len(ids)
+
+
+def skip_short(conn: sqlite3.Connection, min_chars: int) -> int:
+    """Записи короче min_chars модели не отправляем: пересказывать нечего."""
+    return _drop_from_queue(conn, [r["id"] for r in conn.execute(
+        f"SELECT id FROM records WHERE {PENDING} AND length(body) < ?", (min_chars,))])
+
+
+def skip_disabled(conn: sqlite3.Connection, cfg: dict) -> int:
+    """Источники с summarize: false модели не отдаём (например, ящик, который решили не пересказывать).
+    Секцию настроек ищем по коннектору: у ChatGPT ключ записей «chatgpt», а ключ настроек «chatgpt_export»."""
+    sources = [c.source for c in connectors.ALL.values()
+               if cfg["sources"].get(c.name, {}).get("summarize") is False]
+    if not sources:
+        return 0
+    marks = ", ".join("?" * len(sources))
+    return _drop_from_queue(conn, [r["id"] for r in conn.execute(
+        f"SELECT id FROM records WHERE {PENDING} AND source IN ({marks})", sources)])
 
 
 def summarize_pending(conn: sqlite3.Connection, cfg: dict, limit: Optional[int] = None,
@@ -185,12 +207,15 @@ def summarize_pending(conn: sqlite3.Connection, cfg: dict, limit: Optional[int] 
     short = skip_short(conn, int(llm.get("min_chars", 300)))
     if short:
         log(f"коротких записей без пересказа: {short}")
+    off = skip_disabled(conn, cfg)
+    if off:
+        log(f"без пересказа по настройке источника: {off}")
     # Свежее — первым; записи, на которых модель уже падала, — в конец очереди.
     rows = conn.execute(
-        """SELECT * FROM records
-           WHERE summarized_hash IS NULL OR summarized_hash != content_hash
-           ORDER BY summary_error IS NOT NULL, updated_at DESC
-           LIMIT ?""",
+        f"""SELECT * FROM records
+            WHERE {PENDING}
+            ORDER BY summary_error IS NOT NULL, updated_at DESC
+            LIMIT ?""",
         (limit,),
     ).fetchall()
     done = failed = 0

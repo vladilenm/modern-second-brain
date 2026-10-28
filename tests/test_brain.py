@@ -279,6 +279,45 @@ class TopicsTests(unittest.TestCase):
         self.assertEqual([k for k, _ in topics.record_topics("Рилс, рилса, 2026-10-19", "x")], ["рилс"])
         self.assertEqual([k for k, _ in topics.record_topics(None, "Монтаж рилса для клуба")], ["монтаж", "рилс", "клуб"])
 
+    def _rows(self):
+        # 20 записей-фона, чтобы сработал порог «не больше 25%» для общей темы «claude code».
+        rows = [(i, f"claude code, фон{i}", "") for i in range(100, 120)]
+        rows += [
+            (1, "claude code, рилс, субтитры, монтаж", ""),
+            (2, "claude code, рилса, субтитры, монтаж", ""),
+            (3, "claude code, postgresql", ""),
+        ]
+        return rows
+
+    def test_build_links_records_with_shared_rare_topics(self):
+        from brain import topics
+        t = topics.build(self._rows())
+        self.assertIn(2, [o for o, _ in t.neighbors[1]])
+        self.assertEqual(t.neighbors[3], [])  # общая только «claude code» — она в 92% записей
+        self.assertIn((1, 2), [(a, b) for a, b, _ in t.pairs])
+        for a, b, w in t.pairs:
+            self.assertLess(a, b)
+            self.assertTrue(topics.MIN_SIM <= w <= 1)
+        self.assertEqual(len(t.pairs), len({(a, b) for a, b, _ in t.pairs}))
+        self.assertTrue(t.shown[1] and all(isinstance(s, str) for s in t.shown[1]))
+
+    def test_build_caps_own_neighbors(self):
+        from brain import topics
+        rows = [(i, "рилс, субтитры, монтаж", "") for i in range(1, 7)]
+        rows += [(i, f"postgresql, фон{i}", "") for i in range(10, 14)]  # иначе idf общих тем равен нулю
+        t = topics.build(rows)
+        for i in range(1, 7):
+            self.assertLessEqual(len(t.neighbors[i]), topics.MAX_NEIGHBORS)
+        union = {(min(i, o), max(i, o)) for i, _, _ in rows for o, _ in t.neighbors[i]}
+        self.assertEqual(union, {(a, b) for a, b, _ in t.pairs})
+
+    def test_project_topics_prefer_repeated(self):
+        from brain import topics
+        t = topics.build([(1, "рилс, субтитры, редкое1", ""), (2, "рилсы, субтитры, редкое2", ""),
+                          (3, "рилс, монтаж", ""), (4, "postgresql, монтаж", "")])
+        self.assertEqual(set(t.project_topics([1, 2, 3])[:2]), {"рилс", "субтитры"})
+        self.assertNotIn("редкое1", t.project_topics([1, 2, 3])[:2])
+
 
 class DashboardTests(unittest.TestCase):
     def test_page_embeds_data_safely(self):

@@ -5,8 +5,11 @@
 """
 from __future__ import annotations
 
+import math
 import re
-from typing import List, Optional, Tuple
+from collections import Counter, defaultdict
+from dataclasses import dataclass
+from typing import Dict, Iterable, List, Optional, Tuple
 
 MONTHS = "январ|феврал|март|апрел|ма[йя]|июн|июл|август|сентябр|октябр|ноябр|декабр"
 DATE = re.compile(rf"^(\d{{4}}-\d\d(-\d\d)?|\d{{1,2}} ({MONTHS})[а-я]* \d{{4}}|({MONTHS})[а-я]* \d{{4}}|\d{{4}})$")
@@ -48,3 +51,64 @@ def record_topics(keywords: Optional[str], title: Optional[str]) -> List[Tuple[s
             seen.add(key)
             out.append((key, w))
     return out
+
+
+MIN_SIM = 0.12
+MAX_NEIGHBORS = 3
+MAX_SHARE = 0.25   # тема из большей доли записей ничего не различает («claude code»)
+SHOWN = 8
+
+
+@dataclass
+class Topics:
+    shown: Dict[int, List[str]]
+    neighbors: Dict[int, List[Tuple[int, float]]]
+    pairs: List[Tuple[int, int, float]]
+    keys: Dict[int, List[str]]
+    idf: Dict[str, float]
+    display: Dict[str, str]
+
+    def project_topics(self, ids: List[int], limit: int = 5) -> List[str]:
+        """Темы проекта: повторяющиеся в его записях важнее, внутри — по «число записей × idf»."""
+        count = Counter(k for i in ids for k in self.keys.get(i, []))
+        many = len(ids) >= 3
+        ranked = sorted(count, key=lambda k: (many and count[k] < 2, -count[k] * self.idf[k], k))
+        return [self.display[k] for k in ranked[:limit]]
+
+
+def build(rows: Iterable[Tuple[int, Optional[str], Optional[str]]]) -> Topics:
+    per = {rid: record_topics(kw, title) for rid, kw, title in rows}
+    n = len(per)
+    forms: Dict[str, Counter] = defaultdict(Counter)
+    for ts in per.values():
+        for key, word in ts:
+            forms[key][word] += 1
+    keys = {rid: [k for k, _ in ts] for rid, ts in per.items()}
+    df = Counter(k for ks in keys.values() for k in ks)
+    idf = {k: math.log(n / d) for k, d in df.items()}
+    display = {k: c.most_common(1)[0][0] for k, c in forms.items()}
+    cap = MAX_SHARE * n if n >= 20 else n
+    useful = {k for k, d in df.items() if 2 <= d <= cap and idf[k] > 0}
+    shown = {rid: [display[k] for k in sorted(ks, key=lambda k: (k not in useful, -idf[k], k))[:SHOWN]]
+             for rid, ks in keys.items()}
+
+    vec = {rid: [k for k in ks if k in useful] for rid, ks in keys.items()}
+    norm = {rid: math.sqrt(sum(idf[k] ** 2 for k in v)) for rid, v in vec.items()}
+    postings: Dict[str, List[int]] = defaultdict(list)
+    for rid, v in vec.items():
+        for k in v:
+            postings[k].append(rid)
+    neighbors: Dict[int, List[Tuple[int, float]]] = {}
+    edges: Dict[Tuple[int, int], float] = {}
+    for rid, v in vec.items():
+        dot: Dict[int, float] = defaultdict(float)
+        for k in v:
+            for other in postings[k]:
+                if other != rid:
+                    dot[other] += idf[k] ** 2
+        sims = sorted(((round(s / (norm[rid] * norm[o]), 3), o) for o, s in dot.items()), key=lambda x: (-x[0], x[1]))
+        neighbors[rid] = [(o, s) for s, o in sims if s >= MIN_SIM][:MAX_NEIGHBORS]
+        for o, s in neighbors[rid]:
+            edges[(min(rid, o), max(rid, o))] = s
+    pairs = sorted((a, b, w) for (a, b), w in edges.items())
+    return Topics(shown, neighbors, pairs, keys, idf, display)

@@ -6,12 +6,18 @@
 """
 from __future__ import annotations
 
+import io
 import json
+import os
+import shutil
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Iterator, List, Optional
 
 MAX_MESSAGE_CHARS = 20000
+# launchd не передаёт PATH Homebrew, поэтому zstd ищем и там.
+ZSTD_FALLBACKS = ("/opt/homebrew/bin/zstd", "/usr/local/bin/zstd")
 
 
 @dataclass
@@ -104,18 +110,45 @@ class ApiConnector(Connector):
         raise NotImplementedError
 
 
+def zstd_path() -> str:
+    path = shutil.which("zstd") or next((p for p in ZSTD_FALLBACKS if os.path.exists(p)), None)
+    if not path:
+        raise RuntimeError("не найден zstd — поставь его: brew install zstd")
+    return path
+
+
+def read_lines(path: Path) -> Iterator[str]:
+    """Строки текстового файла. Сжатые .zst распаковывает zstd: в Python 3.9 модуля для него нет."""
+    if path.suffix != ".zst":
+        with open(path, encoding="utf-8", errors="ignore") as fh:
+            yield from fh
+        return
+    with subprocess.Popen([zstd_path(), "-dcq", "--", str(path)],
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE) as proc:
+        done = False
+        try:
+            with io.TextIOWrapper(proc.stdout, encoding="utf-8", errors="ignore") as text:
+                yield from text
+            done = True
+        finally:
+            if not done:
+                proc.kill()  # разбор бросил файл на середине — распаковывать остальное незачем
+        err = proc.stderr.read().decode("utf-8", "ignore").strip()
+        if proc.wait():
+            raise RuntimeError(f"zstd: {err or 'не удалось распаковать'}")
+
+
 def iter_jsonl(path: Path) -> Iterator[dict]:
-    with open(path, encoding="utf-8", errors="ignore") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                item = json.loads(line)
-            except ValueError:
-                continue
-            if isinstance(item, dict):
-                yield item
+    for line in read_lines(path):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            item = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(item, dict):
+            yield item
 
 
 def clip(text: str, limit: int = MAX_MESSAGE_CHARS) -> str:

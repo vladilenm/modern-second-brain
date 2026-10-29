@@ -76,11 +76,13 @@ def _sync_files(conn: sqlite3.Connection, connector, prefixes: List[str], rescan
                 now: float) -> Tuple[dict, Optional[str]]:
     counts = _counts()
     last_error = None
+    seen = set()
     for path in connector.files():
         try:
             st = path.stat()
         except OSError:
             continue
+        seen.add(str(path))
         if now - st.st_mtime < connector.idle_seconds:
             counts["waiting"] += 1  # разговор ещё идёт, заберём в следующий раз
             continue
@@ -101,6 +103,10 @@ def _sync_files(conn: sqlite3.Connection, connector, prefixes: List[str], rescan
             conn.rollback()
             counts["errors"] += 1
             last_error = f"{path.name}: {exc}"
+    # Исчезнувшие файлы забываем: Codex сжимает старые сессии в новый файл .zst,
+    # и без этого панель считала бы такую сессию дважды.
+    db.forget_files(conn, connector.roots(), seen)
+    conn.commit()
     error = f"ошибок в файлах: {counts['errors']}, последняя — {last_error}" if last_error else None
     return counts, error
 

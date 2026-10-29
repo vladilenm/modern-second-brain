@@ -5,7 +5,7 @@ import hashlib
 import os
 import sqlite3
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import List, Optional, Set, Tuple
 
 from .connectors.base import Record
 from .redact import redact
@@ -102,10 +102,13 @@ def upsert(conn: sqlite3.Connection, rec: Record) -> str:
     rec.body = redact(rec.body)
     h = content_hash(rec)
     row = conn.execute(
-        "SELECT id, content_hash FROM records WHERE source = ? AND external_id = ?",
+        "SELECT id, content_hash, location FROM records WHERE source = ? AND external_id = ?",
         (rec.source, rec.external_id),
     ).fetchone()
     if row and row["content_hash"] == h:
+        # Тот же разговор в другом файле (Codex сжал rollout-….jsonl в .jsonl.zst): поправить только путь.
+        if rec.location and rec.location != row["location"]:
+            conn.execute("UPDATE records SET location = ? WHERE id = ?", (rec.location, row["id"]))
         return "same"
     if row:
         conn.execute(
@@ -160,6 +163,15 @@ def set_file_state(conn: sqlite3.Connection, path: str, mtime: float, size: int)
         "ON CONFLICT(path) DO UPDATE SET mtime = excluded.mtime, size = excluded.size",
         (path, mtime, size),
     )
+
+
+def forget_files(conn: sqlite3.Connection, roots: List[str], keep: Set[str]) -> int:
+    """Забывает файлы в папках roots, которых больше нет на диске (их нет среди keep)."""
+    prefixes = tuple(r.rstrip("/") + "/" for r in roots)
+    gone = [(r["path"],) for r in conn.execute("SELECT path FROM file_state")
+            if prefixes and r["path"].startswith(prefixes) and r["path"] not in keep]
+    conn.executemany("DELETE FROM file_state WHERE path = ?", gone)
+    return len(gone)
 
 
 def get_cursor(conn: sqlite3.Connection, source: str) -> Optional[str]:

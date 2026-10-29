@@ -25,6 +25,7 @@ from brain import config, db, status, summarize  # noqa: E402
 from brain import connectors  # noqa: E402
 from brain import search as search_mod  # noqa: E402
 from brain import sync as sync_mod  # noqa: E402
+from brain.connectors import base as base_mod  # noqa: E402
 from brain.connectors.base import ApiConnector, Batch, Record  # noqa: E402
 from brain.connectors.chatgpt_export import ChatGPTExportConnector  # noqa: E402
 from brain.connectors.claude_code import ClaudeCodeConnector  # noqa: E402
@@ -68,6 +69,27 @@ def claude_session():
         {"type": "assistant", "isSidechain": True, "timestamp": "2026-10-20T10:00:08Z",
          "message": {"role": "assistant", "content": [{"type": "text", "text": "побочная ветка"}]}},
     ]
+
+
+def codex_session(sid: str):
+    return [
+        {"type": "session_meta", "timestamp": "2026-10-24T21:44:16Z",
+         "payload": {"id": sid, "cwd": "/tmp/c", "thread_source": "user"}},
+        {"type": "response_item", "timestamp": "2026-10-24T21:44:17Z",
+         "payload": {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "Собери превью"}]}},
+        {"type": "response_item", "timestamp": "2026-10-24T21:45:00Z",
+         "payload": {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Готово."}]}},
+    ]
+
+
+def compress(path: Path) -> Path:
+    """Как Codex: rollout-….jsonl заменяется на rollout-….jsonl.zst."""
+    try:
+        zstd = base_mod.zstd_path()
+    except RuntimeError:
+        raise unittest.SkipTest("нет zstd")
+    subprocess.run([zstd, "-q", "--rm", str(path)], check=True)
+    return path.with_name(path.name + ".zst")
 
 
 class ConnectorTests(unittest.TestCase):
@@ -118,6 +140,57 @@ class ConnectorTests(unittest.TestCase):
             {"type": "response_item", "payload": {"type": "message", "role": "user",
                                                   "content": [{"type": "input_text", "text": "проверь"}]}}])
         self.assertEqual(CodexConnector(self.cfg).parse(guardian), [])
+
+    def test_codex_legacy_session_without_thread_source(self):
+        def session(name, source):
+            return write_jsonl(self.tmp / "codex" / name, [
+                {"type": "session_meta", "payload": {"id": name, "source": source}},
+                {"type": "response_item", "timestamp": "2026-05-06T09:41:21Z",
+                 "payload": {"type": "message", "role": "user",
+                             "content": [{"type": "input_text", "text": "Почини сборку"}]}}])
+        [rec] = CodexConnector(self.cfg).parse(session("rollout-old.jsonl", "vscode"))
+        self.assertEqual(rec.title, "Почини сборку")
+        agent = session("rollout-agent.jsonl", {"subagent": {"thread_spawn": {"agent_role": "explorer"}}})
+        self.assertEqual(CodexConnector(self.cfg).parse(agent), [])
+
+    def test_codex_edited_message_branch(self):
+        thread, branch = "01a110c0-8ed8-71b2-994b-572c1e400486", "01a11406-71eb-73b2-9edc-8e903a4ca268"
+
+        def says(n, role, text):
+            kind = "input_text" if role == "user" else "output_text"
+            return {"ordinal": n, "type": "response_item", "timestamp": f"2026-10-06T10:0{n}:00Z",
+                    "payload": {"type": "message", "role": role, "content": [{"type": kind, "text": text}]}}
+        meta = {"id": thread, "cwd": "/tmp/c", "thread_source": "user"}
+        main = write_jsonl(self.tmp / "codex" / "2026" / "10" / "06" / f"rollout-2026-10-06T13-26-57-{thread}.jsonl", [
+            {"ordinal": 0, "type": "session_meta", "payload": meta},
+            says(1, "user", "Разбери чат"), says(2, "assistant", "Разобрал."),
+            says(3, "user", "Сделай таблицу"), says(4, "assistant", "Старая таблица")])
+        # Пользователь поправил второй вопрос: ветка продолжает историю с третьей строки.
+        edited = write_jsonl(self.tmp / "codex" / "2026" / "10" / "07" /
+                             f"rollout-2026-10-07T04-42-09-{thread}_{branch}.jsonl", [
+            {"ordinal": 3, "type": "session_meta",
+             "payload": dict(meta, history_base={"thread_id": thread, "end_ordinal_exclusive": 3})},
+            says(4, "user", "Сделай список"), says(5, "assistant", "Новый список")])
+        connector = CodexConnector(self.cfg)
+        [rec] = connector.parse(main)
+        self.assertEqual(rec.body, "Пользователь: Разбери чат\n\nCodex: Разобрал.\n\n"
+                                   "Пользователь: Сделай список\n\nCodex: Новый список")
+        self.assertEqual((rec.external_id, rec.title, rec.started_at), (thread, "Разбери чат", "2026-10-06T10:01:00Z"))
+        self.assertTrue(rec.location.endswith(edited.name))
+        self.assertEqual(connector.parse(edited), [rec])
+
+    def test_codex_reads_compressed_sessions(self):
+        plain = write_jsonl(self.tmp / "codex" / "2026" / "rollout-z.jsonl", codex_session("z"))
+        packed = compress(plain)
+        self.assertEqual([p.name for p in CodexConnector(self.cfg).files()], ["rollout-z.jsonl.zst"])
+        [rec] = CodexConnector(self.cfg).parse(packed)
+        self.assertEqual((rec.external_id, rec.title), ("z", "Собери превью"))
+        self.assertIn("Codex: Готово.", rec.body)
+
+        broken = self.tmp / "codex" / "rollout-bad.jsonl.zst"
+        broken.write_bytes(b"\x28\xb5\x2f\xfd not zstd")
+        with self.assertRaises(RuntimeError):
+            CodexConnector(self.cfg).parse(broken)
 
     def test_chatgpt_export_takes_active_branch(self):
         conv = {
@@ -386,6 +459,24 @@ class SyncTests(unittest.TestCase):
         state = conn.execute("SELECT * FROM sync_state WHERE source = 'claude_code'").fetchone()
         self.assertIsNone(state["last_error"])
         self.assertIsNotNone(state["last_success_at"])
+
+    def test_codex_session_compressed_after_sync(self):
+        tmp = Path(tempfile.mkdtemp())
+        cfg = make_cfg(tmp)
+        conn = db.connect(cfg["db_path"])
+        quiet = lambda *_: None  # noqa: E731
+        old = time.time() - 3600
+        plain = write_jsonl(tmp / "codex" / "rollout-s.jsonl", codex_session("s"))
+        os.utime(plain, (old, old))
+        self.assertEqual(sync_mod.sync(cfg, conn, only="codex", log=quiet)["codex"]["new"], 1)
+
+        packed = compress(plain)
+        os.utime(packed, (old, old))
+        totals = sync_mod.sync(cfg, conn, only="codex", log=quiet)["codex"]
+        self.assertEqual((totals["new"], totals["changed"], totals["errors"]), (0, 0, 0))
+        [location] = [r[0] for r in conn.execute("SELECT location FROM records WHERE source = 'codex'")]
+        self.assertTrue(location.endswith("rollout-s.jsonl.zst"))
+        self.assertEqual([r[0] for r in conn.execute("SELECT path FROM file_state")], [str(packed)])
 
 
 class ExcludeTests(unittest.TestCase):

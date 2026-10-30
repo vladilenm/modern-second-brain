@@ -37,6 +37,20 @@ CREATE TABLE IF NOT EXISTS records (
 );
 CREATE INDEX IF NOT EXISTS records_updated ON records (updated_at);
 
+-- Индекс заголовков почты (Яндекс): заголовок каждого письма забираем один раз, а треды собираем
+-- по этой таблице. pending = 1 — тред письма ещё не пересобран после того, как письмо попало в индекс.
+CREATE TABLE IF NOT EXISTS mail_index (
+    source TEXT NOT NULL,
+    folder TEXT NOT NULL,
+    validity INTEGER NOT NULL,
+    uid INTEGER NOT NULL,
+    message_id TEXT NOT NULL,
+    root TEXT NOT NULL,
+    pending INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (source, folder, uid)
+);
+CREATE INDEX IF NOT EXISTS mail_index_root ON mail_index (source, root);
+
 -- Отдельная копия текста под поиск. trigram ищет по подстрокам,
 -- поэтому «клуб» находит и «клуба», и «клубу».
 CREATE VIRTUAL TABLE IF NOT EXISTS records_fts USING fts5 (

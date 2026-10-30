@@ -51,6 +51,8 @@ class MailConnector(ApiConnector):
             raise RuntimeError(f"{self.title}: {exc}") from None
         except OSError as exc:
             raise RuntimeError(f"{self.title}: нет связи ({exc})") from None
+        except imaplib.IMAP4.error as exc:  # сервер оборвал разговор ещё до входа
+            raise RuntimeError(f"{self.title}: ошибка IMAP ({exc})") from None
         try:
             yield from self._pass(box, cursor)
         except OSError as exc:  # нет сети, таймаут, обрыв соединения
@@ -59,6 +61,7 @@ class MailConnector(ApiConnector):
             raise RuntimeError(f"{self.title}: ошибка IMAP ({exc})") from None
         finally:
             box.close()
+            self.close()
 
     def _pass(self, box, cursor: Optional[str]) -> Iterator[Batch]:
         previous = cursor or "{}"  # «{}» читается как «курсора нет»
@@ -68,15 +71,20 @@ class MailConnector(ApiConnector):
             pos = {}
         keys, after = self.candidates(box, pos if isinstance(pos, dict) else {})
         batch: List[Record] = []
+        written: List[str] = []
         for key in sorted(keys):
             messages = self.thread(box, key)
             if not any(m.mine or m.flagged for m in messages):
+                self.done([key])
                 continue  # не моя переписка: ни моего письма, ни пометки
             batch.append(self.record(key, messages))
+            written.append(key)
             if len(batch) >= THREAD_BATCH:
                 yield Batch(batch, previous)
-                batch = []
+                self.done(written)  # сюда возвращаемся, когда sync уже записал пачку
+                batch, written = [], []
         yield Batch(batch, json.dumps(after, sort_keys=True))
+        self.done(written)
 
     def record(self, key: str, messages: List[MailMessage]) -> Record:
         title, body = render_thread(messages)
@@ -113,3 +121,9 @@ class MailConnector(ApiConnector):
 
     def location(self, key: str) -> Optional[str]:
         return None
+
+    def done(self, keys: List[str]) -> None:
+        """Треды записаны (или оказались чужими) — стратегия может забыть, что их надо пересобрать."""
+
+    def close(self) -> None:
+        """Конец прогона: стратегия освобождает своё (например, соединение с индексом)."""

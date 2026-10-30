@@ -17,7 +17,7 @@ from .mailparse import MailMessage, parse
 
 TIMEOUT = 60
 FETCH_LIMIT = 1048576  # первый мегабайт письма: текст идёт раньше вложений, режутся в основном они
-CHUNK = 200            # UID в одной команде FETCH
+CHUNK = 50             # UID в одной команде FETCH: на 200 письмах Яндекс думал полминуты и рвал соединение
 MONTHS_EN = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 LIST_LINE = re.compile(rb'^\((?P<flags>[^)]*)\)\s+(?:"(?:[^"\\]|\\.)*"|NIL)\s+(?P<name>.+)$')
 STATUS_VALUE = re.compile(rb"(UIDVALIDITY|UIDNEXT)\s+(\d+)")
@@ -154,6 +154,11 @@ class Mailbox:
         except Exception:
             pass  # закрываем как можем: результат прогона от этого не зависит
 
+    def reconnect(self) -> "Mailbox":
+        """Новое соединение вместо оборванного (папку после него надо выбрать заново)."""
+        self.close()
+        return self.open()
+
     @staticmethod
     def _ok(typ, data, what: str):
         if typ != "OK":
@@ -181,11 +186,6 @@ class Mailbox:
         criteria = ("FLAGGED", "SINCE", imap_date(day)) if flagged else ("SINCE", imap_date(day))
         return self._search(*criteria)
 
-    def uids_in_thread(self, root: str) -> List[int]:
-        q = quote(root)
-        return self._search("OR", "OR", "HEADER", "Message-ID", q, "HEADER", "References", q,
-                            "HEADER", "In-Reply-To", q)
-
     def gmail_search(self, query: str, thread: str = "") -> List[int]:
         criteria = ("X-GM-THRID", thread) if thread else ()
         return self._search(*criteria, "X-GM-RAW", quote(query))
@@ -197,8 +197,17 @@ class Mailbox:
         uids = sorted(set(uids))
         out: List[Fetched] = []
         for i in range(0, len(uids), CHUNK):
-            chunk = ",".join(str(u) for u in uids[i:i + CHUNK])
-            out.extend(parse_fetch(self._ok(*self.imap.uid("FETCH", chunk, items), "FETCH")))
+            part = uids[i:i + CHUNK]
+            typ, data = self.imap.uid("FETCH", ",".join(str(u) for u in part), items)
+            if typ == "OK":
+                out.extend(parse_fetch(data))
+                continue
+            # Яндекс отвечает NO на всю пачку, если хоть одно письмо в ней недоступно (зашифровано):
+            # берём поштучно, недоступные пропускаем — без них тред всё равно читается.
+            for uid in part:
+                typ, data = self.imap.uid("FETCH", str(uid), items)
+                if typ == "OK":
+                    out.extend(parse_fetch(data))
         return out
 
     def gmail_threads(self, uids: Iterable[int]) -> Dict[int, str]:

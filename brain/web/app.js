@@ -9,7 +9,7 @@ const date = (iso) => (iso ? new Date(iso) : null);
 const DAY = 864e5;
 const NOW = Date.now();
 const thisYear = new Date().getFullYear();
-const dayMonth = (d) => d.toLocaleDateString("ru-RU", { day: "numeric", month: "short", ...(d.getFullYear() !== thisYear && { year: "numeric" }) }).replace(".", "").replace(" г", "");
+const dayMonth = (d) => d.toLocaleDateString("ru-RU", { day: "numeric", month: "short", ...(d.getFullYear() !== thisYear && { year: "numeric" }) }).replace(/\./g, "").replace(" г", "");
 const fullDate = (d) => d.toLocaleDateString("ru-RU", { day: "numeric", month: "long", year: "numeric" });
 const clock = (d) => d.toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
 const stamp = (d) => (d ? `${fullDate(d)}, ${clock(d)}` : "—");
@@ -321,37 +321,65 @@ function fresh() {
 
 // ---- 02 Граф
 let graph = null;
-const gf = { sources: new Set(SRC.map((s) => s.source)), period: "all", topic: true, q: "" };
+const PREFS_KEY = "brain.graph.prefs";
+const gf = { sources: new Set(SRC.map((s) => s.source)), period: "all", q: "", hits: [], at: -1 };
+const gv = { topic: true, minW: 0, areas: true, labels: "less" };
+try { Object.assign(gv, JSON.parse(localStorage.getItem(PREFS_KEY)) || {}); } catch { /* настройки по умолчанию */ }
+const savePrefs = () => { try { localStorage.setItem(PREFS_KEY, JSON.stringify(gv)); } catch { /* не запомним */ } };
+const PCOUNT = projectCounts();
+// Кольцо есть только у проекта из двух записей и больше: проект из одной записи — это сама запись.
+const hubId = (key) => (PCOUNT[key] >= 2 ? "p:" + key : null);
+const nodeId = (v) => (/^\d+$/.test(v) ? +v : v);
+const TOPIC_W = (DATA.graph?.edges || []).filter(([a, b]) => byId.has(a) && byId.has(b)).map(([, , w]) => w);
+// Связи проекта с другими: сколько рёбер по темам идёт из его записей в записи чужого проекта.
+const PLINKS = new Map();
+for (const [a, b] of DATA.graph?.edges || []) {
+  const ka = byId.get(a)?.pkey, kb = byId.get(b)?.pkey;
+  if (!ka || !kb || ka === kb) continue;
+  for (const [x, y] of [[ka, kb], [kb, ka]]) {
+    const m = PLINKS.get(x) || PLINKS.set(x, new Map()).get(x);
+    m.set(y, (m.get(y) || 0) + 1);
+  }
+}
+
 function renderGraph(arg) {
   if (!graph) initGraph();
   if (!graph) return;
   requestAnimationFrame(() => {
     graph.resize();
-    const id = +arg;
-    if (arg && byId.has(id)) graph.focus(id); else graph.unpin();
+    const id = nodeId(arg);
+    if (arg && graph.has(id) && graph.selected()?.id !== id) showOnGraph(id);
   });
 }
+// Выбрать узел и долететь до него. Запись, скрытую фильтрами, показываем со сброшенными фильтрами.
+function showOnGraph(id) {
+  if (!graph.passes(id)) resetGraphFilters();
+  graph.select(id, { fly: true, zoom: 3 });
+}
+let resetGraphFilters = () => {};
+
 function initGraph() {
   const box = $(".graph-box");
   if (!R.length) {
     box.insertAdjacentHTML("beforeend", `<div class="graph-empty">${empty("Граф пока пустой", "Запусти <code>brain sync</code>: записи соберутся вокруг своих проектов.")}</div>`);
     $("#graph-sub").textContent = "";
+    $(".graph-tools").hidden = true;
+    $(".graph-legend").hidden = true;
     return;
   }
-  const counts = projectCounts();
   const logMin = Math.log(500), logMax = Math.log(80000);
   const nodes = R.map((r) => ({
-    id: r.id, kind: "record", source: r.source, colorVar: colorVar(r.source), label: r.title, pkey: r.pkey, updated: r.updated_at,
+    id: r.id, kind: "record", colorVar: colorVar(r.source), label: r.title, pkey: r.pkey,
     r: 3 + 6 * Math.max(0, Math.min(1, (Math.log(Math.max(1, r.body_len)) - logMin) / (logMax - logMin))),
   }));
-  for (const [key, count] of Object.entries(counts)) {
-    nodes.push({ id: "p:" + key, kind: "project", label: projName(key), pkey: key, count, r: Math.min(16, 6 + Math.sqrt(count) * 1.4) });
+  for (const [key, count] of Object.entries(PCOUNT)) {
+    if (hubId(key)) nodes.push({ id: hubId(key), kind: "project", label: projName(key), pkey: key, count, r: Math.min(16, 6 + Math.sqrt(count) * 1.4) });
   }
-  const links = R.filter((r) => r.pkey).map((r) => ({ s: r.id, t: "p:" + r.pkey, w: 1, kind: "project" }));
+  const links = R.filter((r) => hubId(r.pkey)).map((r) => ({ s: r.id, t: hubId(r.pkey), w: 1, kind: "project" }));
   for (const [a, b, w] of DATA.graph.edges) if (byId.has(a) && byId.has(b)) links.push({ s: a, t: b, w, kind: "topic" });
-  const topicCount = links.length - R.filter((r) => r.pkey).length;
-  const summary = `${words(R.length, RECORD_FORMS)}, ${words(Object.keys(counts).length, ["проект", "проекта", "проектов"])}, ${words(topicCount, ["связь", "связи", "связей"])} по темам`;
-  $("#graph-sub").textContent = `${summary}. Записи держатся рядом со своим проектом, линии между ними — общие темы из карточек.`;
+  const topicCount = TOPIC_W.length;
+  const summary = `${words(R.length, RECORD_FORMS)}, ${words(Object.keys(PCOUNT).length, ["проект", "проекта", "проектов"])}, ${words(topicCount, ["связь", "связи", "связей"])} по темам`;
+  $("#graph-sub").textContent = `${summary}. Кольца — проекты, точки — записи, линии — общие темы из карточек. Выбери точку, и останутся видны только её связи.`;
   const canvas = $("#graph");
   canvas.setAttribute("aria-label", `Граф: ${summary}. Те же записи списком на вкладках «Проекты» и «Записи».`);
 
@@ -360,37 +388,57 @@ function initGraph() {
     ${SRC.filter((s) => s.count).map((s) => `<button class="chip" type="button" data-src="${esc(s.source)}" aria-pressed="true">
       <span class="dot" style="background:${color(s.source)}"></span>${esc(s.title)} <span class="num">${n(s.count)}</span></button>`).join("")}
     <div class="seg" id="g-period" role="group" aria-label="Период"></div>
-    <label class="toggle ${topicCount ? "" : "off"}"><input type="checkbox" id="g-topic" ${topicCount ? "checked" : "disabled"}>
-      ${topicCount ? "Связи по темам" : "Связи по темам появятся после пересказа"}</label>
-    <input type="search" id="g-q" placeholder="Найти на графе" aria-label="Найти на графе">
-    <span class="graph-found" id="g-found" aria-live="polite"></span>`;
-  gf.topic = !!topicCount;
+    <div class="graph-search">
+      <input type="search" id="g-q" placeholder="Найти на графе" aria-label="Найти на графе" aria-describedby="g-found" autocomplete="off">
+      <span class="graph-found" id="g-found" aria-live="polite"></span>
+    </div>`;
+  if (!topicCount) gv.topic = false;
 
+  const panel = $("#graph-panel");
   graph = createGraph(canvas, {
-    nodes, links,
-    onOpen: (id) => openRecord(id),
-    onProject: (key) => go(`#project/${encodeURIComponent(key)}`),
+    nodes, links, prefs: gv,
+    // Панель выбранного закрывает часть холста: вписываем и центрируем граф в оставшееся место.
+    inset() {
+      if (panel.hidden) return {};
+      const b = box.getBoundingClientRect(), p = panel.getBoundingClientRect();
+      return p.top - b.top > 40 ? { bottom: b.bottom - p.top } : { right: b.right - p.left };
+    },
+    onOpen(node) { if (node.kind === "record") openRecord(node.id); else go(`#project/${encodeURIComponent(node.pkey)}`); },
+    onSelect(node) {
+      Charts.tip.hide();
+      renderPanel(node);
+      const hash = node ? `#graph/${encodeURIComponent(node.id)}` : "#graph";
+      if (location.hash !== hash && current?.tab === "graph") {
+        history.replaceState(null, "", hash);
+        current = { tab: "graph", arg: node ? String(node.id) : "" };
+      }
+    },
     onHover(node, x, y) {
       if (!node) return Charts.tip.hide();
       if (node.kind === "project") {
-        Charts.tip.show(`<b>${esc(node.label)}</b><small>${words(node.count, RECORD_FORMS)}, клик открывает проект</small>`, x, y);
+        Charts.tip.show(`<b>${esc(node.label)}</b><small>проект, ${words(node.count, RECORD_FORMS)}</small>`, x, y);
       } else {
         const r = byId.get(node.id);
         Charts.tip.show(`<div class="row"><span class="swatch" style="background:${color(r.source)}"></span><b>${esc(r.title)}</b></div><small>${esc(srcName(r.source))}, ${esc(projName(r.pkey))}, ${esc(dayMonth(date(r.updated_at)))}</small>`, x, y);
       }
     },
   });
-  const apply = () => {
+
+  // Фильтры над графом
+  const search = () => {
+    const q = terms(gf.q), found = $("#g-found");
+    gf.at = -1;
+    if (!q.length) { gf.hits = []; graph.highlight(null); found.textContent = ""; return; }
+    gf.hits = R.filter((r) => graph.passes(r.id) && matchAll(r, q)).map((r) => r.id);
+    graph.highlight(gf.hits.length ? new Set(gf.hits) : new Set([-1]));
+    found.textContent = gf.hits.length ? `${words(gf.hits.length, RECORD_FORMS)}, Enter — к следующей` : "ничего не нашлось";
+  };
+  const apply = (refit) => {
     const maxDays = gf.period === "all" ? Infinity : +gf.period;
     const ok = new Set(R.filter((r) => gf.sources.has(r.source) && daysAgo(r.updated_at) <= maxDays).map((r) => r.id));
     const liveProjects = new Set(R.filter((r) => ok.has(r.id)).map((r) => r.pkey));
-    graph.setFilter((node) => (node.kind === "record" ? ok.has(node.id) : liveProjects.has(node.pkey)));
-    const q = terms(gf.q);
-    if (q.length) {
-      const hits = new Set(R.filter((r) => ok.has(r.id) && matchAll(r, q)).map((r) => r.id));
-      graph.highlight(hits.size ? hits : new Set([-1]));
-      $("#g-found").textContent = hits.size ? `найдено ${words(hits.size, RECORD_FORMS)}` : "ничего не нашлось";
-    } else { graph.highlight(null); $("#g-found").textContent = ""; }
+    graph.setFilter((node) => (node.kind === "record" ? ok.has(node.id) : liveProjects.has(node.pkey)), refit);
+    search();
   };
   c.addEventListener("click", (e) => {
     const chip = e.target.closest(".chip");
@@ -398,17 +446,153 @@ function initGraph() {
     const s = chip.dataset.src, on = chip.getAttribute("aria-pressed") !== "true";
     chip.setAttribute("aria-pressed", on);
     if (on) gf.sources.add(s); else gf.sources.delete(s);
-    apply();
+    apply(true);
   });
-  seg($("#g-period"), [["all", "Всё время"], ["90", "90 дней"], ["30", "30 дней"]], gf.period, (v) => { gf.period = v; apply(); });
-  $("#g-topic").addEventListener("change", (e) => { gf.topic = e.target.checked; graph.setTopicLinks(gf.topic); });
-  $("#g-q").addEventListener("input", (e) => { gf.q = e.target.value; apply(); });
-  document.querySelector(".graph-zoom").addEventListener("click", (e) => {
-    const z = e.target.closest("button")?.dataset.zoom;
-    if (z === "in") graph.zoom(1.4); else if (z === "out") graph.zoom(1 / 1.4); else if (z === "fit") graph.fit();
+  seg($("#g-period"), [["all", "Всё время"], ["90", "90 дней"], ["30", "30 дней"]], gf.period, (v) => { gf.period = v; apply(true); });
+  resetGraphFilters = () => {
+    gf.sources = new Set(SRC.map((s) => s.source));
+    gf.period = "all";
+    c.querySelectorAll(".chip").forEach((b) => b.setAttribute("aria-pressed", "true"));
+    $("#g-period").querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", b.dataset.v === "all"));
+    apply(false);
+  };
+  const q = $("#g-q");
+  q.addEventListener("input", () => { gf.q = q.value; search(); });
+  q.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && q.value) { q.value = gf.q = ""; search(); e.stopPropagation(); return; }
+    if (e.key !== "Enter" || !gf.hits.length) return;
+    e.preventDefault();
+    gf.at = (gf.at + (e.shiftKey ? -1 : 1) + gf.hits.length) % gf.hits.length;
+    graph.select(gf.hits[gf.at], { fly: true, zoom: 3 });
+    $("#g-found").textContent = `${n(gf.at + 1)} из ${words(gf.hits.length, RECORD_FORMS)}, Shift+Enter — назад`;
   });
-  apply();
+
+  // Масштаб и настройки вида
+  box.querySelector(".graph-tools").addEventListener("click", (e) => {
+    const z = e.target.closest("[data-zoom]")?.dataset.zoom;
+    if (z === "in") graph.zoom(1.5); else if (z === "out") graph.zoom(1 / 1.5); else if (z === "fit") graph.fit();
+  });
+  const vbtn = $("#gv-btn"), vpanel = $("#graph-view");
+  const showView = (open) => { vpanel.hidden = !open; vbtn.setAttribute("aria-expanded", open); };
+  vbtn.addEventListener("click", () => showView(vpanel.hidden));
+  document.addEventListener("pointerdown", (e) => { if (!vpanel.hidden && !e.target.closest(".graph-tools")) showView(false); });
+  vpanel.addEventListener("keydown", (e) => { if (e.key === "Escape") { showView(false); vbtn.focus(); e.stopPropagation(); } });
+  const topicBox = $("#gv-topic"), minw = $("#gv-minw"), areas = $("#gv-areas");
+  topicBox.checked = gv.topic;
+  topicBox.disabled = !topicCount;
+  if (!topicCount) $("#gv-topic-label").textContent = "Связи по темам появятся после пересказа";
+  minw.value = gv.minW;
+  areas.checked = gv.areas;
+  const updateView = () => {
+    const shownW = TOPIC_W.filter((w) => w >= gv.minW).length;
+    $("#gv-minw-out").textContent = gv.minW ? `от ${String(gv.minW.toFixed(2)).replace(".", ",")}, ${words(shownW, ["связь", "связи", "связей"])}` : `любая, ${words(shownW, ["связь", "связи", "связей"])}`;
+    minw.disabled = !gv.topic;
+    graph.setPrefs(gv);
+    savePrefs();
+    if (graph.selected()) renderPanel(graph.selected());
+  };
+  topicBox.addEventListener("change", () => { gv.topic = topicBox.checked; updateView(); });
+  minw.addEventListener("input", () => { gv.minW = +minw.value; updateView(); });
+  areas.addEventListener("change", () => { gv.areas = areas.checked; updateView(); });
+  seg($("#gv-labels"), [["less", "Меньше"], ["more", "Больше"]], gv.labels, (v) => { gv.labels = v; updateView(); });
+  $("#gv-relayout").addEventListener("click", () => { graph.relayout(); showView(false); });
+  updateView();
+
+  // Панель выбранного
+  panel.addEventListener("click", (e) => {
+    const t = e.target;
+    const sel = t.closest("[data-gsel]");
+    if (sel) return showOnGraph(nodeId(sel.dataset.gsel));
+    const open = t.closest("[data-open]");
+    if (open) return openRecord(+open.dataset.open);
+    if (t.closest("[data-local]")) {
+      graph.setLocal(!graph.isLocal());
+      renderPanel(graph.selected());
+      return $("#graph-panel [data-local]")?.focus();
+    }
+    if (t.closest(".gp-close")) graph.select(null);
+  });
+  apply(false);
 }
+
+// ---- Панель выбранного узла
+const gpItem = (x, note) => `<li><button type="button" data-gsel="${x.id}"><span class="dot" style="background:${color(x.source)}"></span><span class="t">${esc(x.title)}</span><span class="m">${note}</span></button></li>`;
+const topicTags = (list) => (list.length ? `<div class="topics">${list.map((t) => `<span class="tag topic">${esc(t)}</span>`).join("")}</div>` : "");
+function panelHead(label) {
+  return `<div class="gp-head"><p class="label">${label}</p>
+    <button class="gp-close" type="button" aria-label="Снять выбор" title="Снять выбор (Esc)">
+      <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+    </button></div>`;
+}
+function panelActions(main) {
+  const local = graph.isLocal();
+  return `<div class="gp-actions">${main}<button class="btn ghost" type="button" data-local aria-pressed="${local}">${local ? "Весь граф" : "Только связанные"}</button></div>`;
+}
+function panelRecord(r) {
+  const hub = hubId(r.pkey);
+  const proj = hub ? `<button class="gp-link" type="button" data-gsel="${esc(hub)}">${esc(projName(r.pkey))}</button>`
+    : r.pkey ? `<a class="gp-link" href="#project/${encodeURIComponent(r.pkey)}">${esc(projName(r.pkey))}</a>` : "";
+  // Почему записи связаны: общие темы из карточек.
+  const mine = new Set(r.topics);
+  const nb = neighbors(r.id).slice(0, 6).map(([o]) => {
+    const x = byId.get(o), common = x.topics.filter((t) => mine.has(t)).slice(0, 3);
+    return gpItem(x, esc([projName(x.pkey), common.join(", ")].filter(Boolean).join(" · ")));
+  });
+  return `
+    ${panelHead(`<span class="dot" style="background:${color(r.source)}"></span>${esc(srcName(r.source))}, ${esc(dayMonth(date(r.updated_at)))}`)}
+    <h2 class="gp-title">${esc(r.title)}</h2>
+    ${proj ? `<p class="gp-proj">Проект ${proj}</p>` : ""}
+    ${r.summary ? `<p class="gp-sum">${esc(r.summary)}</p>` : `<p class="gp-sum">${r.error ? "Модель не смогла пересказать эту запись." : "Карточки пока нет: запись ждёт пересказа."}</p>`}
+    ${topicTags(r.topics.slice(0, 6))}
+    ${panelActions(`<button class="btn" type="button" data-open="${r.id}">Открыть карточку</button>`)}
+    <p class="label">Похожие по темам</p>
+    ${nb.length ? `<ul class="gp-list">${nb.join("")}</ul>` : `<p class="gp-none">Общих тем с другими записями нет.</p>`}`;
+}
+function panelProject(key) {
+  const meta = PROJECTS[key], recs = R.filter((r) => r.pkey === key);
+  const rel = [...(PLINKS.get(key) || new Map())].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([k, cnt]) =>
+    `<li><button type="button" class="nodot" data-gsel="${esc(hubId(k) || R.find((r) => r.pkey === k).id)}"><span class="t">${esc(projName(k))}</span><span class="m">${words(cnt, ["общая связь", "общие связи", "общих связей"])}</span></button></li>`);
+  return `
+    ${panelHead(`Проект, ${words(recs.length, RECORD_FORMS)}`)}
+    <h2 class="gp-title">${esc(meta.name)}</h2>
+    <p class="paths">${meta.paths.slice(0, 2).map(esc).join("<br>")}${meta.paths.length > 2 ? `<br>и ещё ${meta.paths.length - 2}` : ""}</p>
+    ${topicTags(meta.topics)}
+    ${panelActions(`<a class="btn" href="#project/${encodeURIComponent(key)}">Страница проекта</a>`)}
+    ${rel.length ? `<p class="label">Связан по темам</p><ul class="gp-list">${rel.join("")}</ul>` : ""}
+    <p class="label">Последние записи</p>
+    <ul class="gp-list">${recs.slice(0, 6).map((x) => gpItem(x, `${esc(srcName(x.source))}, ${esc(dayMonth(date(x.updated_at)))}`)).join("")}</ul>`;
+}
+function renderPanel(node) {
+  const p = $("#graph-panel");
+  if (!node) { p.hidden = true; p.innerHTML = ""; return; }
+  p.innerHTML = node.kind === "record" ? panelRecord(byId.get(node.id)) : panelProject(node.pkey);
+  p.hidden = false;
+  p.scrollTop = 0;
+}
+
+// Клавиши на вкладке графа: + − 0 — масштаб, стрелки — сдвиг, Esc — снять выбор, Enter — открыть выбранное.
+addEventListener("keydown", (e) => {
+  if (current?.tab !== "graph" || !graph || $(".drawer") || side.classList.contains("open")) return;
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const t = e.target;
+  if (t.closest && t.closest("input, textarea, select, [contenteditable]")) return;
+  const step = 80, k = e.key;
+  if (k === "+" || k === "=") graph.zoom(1.5);
+  else if (k === "-" || k === "_") graph.zoom(1 / 1.5);
+  else if (k === "0") graph.fit();
+  else if (k === "ArrowLeft") graph.pan(step, 0);
+  else if (k === "ArrowRight") graph.pan(-step, 0);
+  else if (k === "ArrowUp") graph.pan(0, step);
+  else if (k === "ArrowDown") graph.pan(0, -step);
+  else if (k === "Escape" && !$("#graph-view").hidden) $("#gv-btn").click();
+  else if (k === "Escape" && graph.isLocal()) { graph.setLocal(false); renderPanel(graph.selected()); }
+  else if (k === "Escape" && graph.selected()) graph.select(null);
+  else if (k === "Enter" && graph.selected() && !(t.closest && t.closest("button, a"))) {
+    const s = graph.selected();
+    if (s.kind === "record") openRecord(s.id); else go(`#project/${encodeURIComponent(s.pkey)}`);
+  } else return;
+  e.preventDefault();
+});
 
 // ---- 03 Проекты
 let gridReady = false, psort = "recent", pq = "";

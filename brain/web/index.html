@@ -78,12 +78,34 @@
       <div class="graph-controls" id="graph-controls"></div>
       <div class="graph-box">
         <canvas id="graph" role="img"></canvas>
-        <div class="graph-zoom" role="group" aria-label="Масштаб">
-          <button type="button" data-zoom="in" aria-label="Приблизить">+</button>
-          <button type="button" data-zoom="out" aria-label="Отдалить">&minus;</button>
-          <button type="button" data-zoom="fit">Вписать</button>
+        <div class="graph-tools">
+          <div class="graph-bar" role="group" aria-label="Масштаб">
+            <button type="button" data-zoom="in" aria-label="Приблизить" title="Приблизить (+)">+</button>
+            <button type="button" data-zoom="out" aria-label="Отдалить" title="Отдалить (−)">&minus;</button>
+            <button type="button" data-zoom="fit" title="Вписать весь граф (0)">Вписать</button>
+          </div>
+          <div class="graph-bar">
+            <button type="button" id="gv-btn" aria-expanded="false" aria-controls="graph-view">Вид</button>
+          </div>
+          <div class="graph-view" id="graph-view" hidden>
+            <label class="toggle"><input type="checkbox" id="gv-topic"> <span id="gv-topic-label">Связи по темам</span></label>
+            <div class="gv-row">
+              <div class="gv-head"><label for="gv-minw">Сила связи</label><output id="gv-minw-out" for="gv-minw"></output></div>
+              <input type="range" id="gv-minw" min="0" max="0.6" step="0.02">
+            </div>
+            <label class="toggle"><input type="checkbox" id="gv-areas"> Области проектов</label>
+            <div class="gv-row">
+              <div class="gv-head"><span>Подписи</span></div>
+              <div class="seg" id="gv-labels" role="group" aria-label="Подписи"></div>
+            </div>
+            <button class="btn" type="button" id="gv-relayout">Разложить заново</button>
+          </div>
         </div>
-        <p class="graph-hint">Колесо или щипок меняют масштаб, перетаскивание двигает. Клик по точке открывает запись, по кольцу открывает проект.</p>
+        <aside class="graph-panel" id="graph-panel" aria-label="Выбранное на графе" hidden></aside>
+        <p class="graph-legend">
+          <span><i class="lg-hub"></i>проект</span><span><i class="lg-rec"></i>запись</span><span><i class="lg-line"></i>общие темы</span>
+          <span class="lg-hint">Клик выбирает, второй клик открывает, Esc снимает выбор</span>
+        </p>
       </div>
     </section>
 

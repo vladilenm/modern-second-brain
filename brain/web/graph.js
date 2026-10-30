@@ -666,7 +666,9 @@ function createGraph(canvas, opts) {
     // how.zoom — во сколько раз ближе вписанного вида, чтобы в узкой и широкой рамке приближение было одинаковым.
     if (how.fly) flyTo({ k: Math.max(view.k, Math.min(4, (fitView() || view).k * (how.zoom || 1))) }, n);
     else {
-      // Узел ушёл под панель или за край — подвозим его к центру, не меняя масштаб.
+      // Вид больше не вписывается сам: иначе граф уехал бы из-под курсора, когда откроется панель,
+      // и второй клик промахнулся бы. Узел ушёл под панель или за край — подвозим его, не меняя масштаб.
+      auto = false;
       const f = free(), sx = n.x * view.k + view.x, sy = n.y * view.k + view.y, m = 32;
       if (sx < f.x0 + m || sx > f.x1 - m || sy < f.y0 + m || sy > f.y1 - m) flyTo({ k: view.k }, n);
     }
@@ -677,8 +679,11 @@ function createGraph(canvas, opts) {
     const r = canvas.getBoundingClientRect(), dpr = devicePixelRatio || 1;
     if (!r.width) return;
     const first = !W;
+    // Рамка поменяла размер (окно, весь экран) — середина вида остаётся серединой.
+    const [mx, my] = first ? [0, 0] : freeCenter(), cx = (mx - view.x) / view.k, cy = (my - view.y) / view.k;
     W = r.width; H = r.height;
     canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+    if (!first && !auto && !cam && !follow) { const [nx, ny] = freeCenter(); view.x = nx - cx * view.k; view.y = ny - cy * view.k; }
     if (first) {
       aspect = Math.max(0.7, Math.min(2.4, W / H));
       // Почти всё на сохранённых местах — только даём новым записям встать, без разлёта всего графа.

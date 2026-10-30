@@ -120,6 +120,7 @@ function route() {
   document.title = `${TABS[r.tab].title} · Второй мозг`;
   closeMenu();
   Charts.tip.hide();
+  if (r.tab !== "graph" && graphFull()) setGraphFull(false);
   const prev = current;
   current = r;
   TABS[r.tab].render(r.arg);
@@ -472,6 +473,13 @@ function initGraph() {
     const z = e.target.closest("[data-zoom]")?.dataset.zoom;
     if (z === "in") graph.zoom(1.5); else if (z === "out") graph.zoom(1 / 1.5); else if (z === "fit") graph.fit();
   });
+  markFull(false);
+  $("#g-full").addEventListener("click", () => setGraphFull(!graphFull()));
+  // Рамка графа меняет размер не только с окном: во весь экран и обратно. Следим за ней самой.
+  let rz = 0;
+  new ResizeObserver(() => {
+    if (!rz) rz = requestAnimationFrame(() => { rz = 0; if (current?.tab === "graph") graph.resize(); });
+  }).observe(box);
   const vbtn = $("#gv-btn"), vpanel = $("#graph-view");
   const showView = (open) => { vpanel.hidden = !open; vbtn.setAttribute("aria-expanded", open); };
   vbtn.addEventListener("click", () => showView(vpanel.hidden));
@@ -580,6 +588,7 @@ addEventListener("keydown", (e) => {
   if (k === "+" || k === "=") graph.zoom(1.5);
   else if (k === "-" || k === "_") graph.zoom(1 / 1.5);
   else if (k === "0") graph.fit();
+  else if (e.code === "KeyF") setGraphFull(!graphFull());          // по коду клавиши: работает и в русской раскладке
   else if (k === "ArrowLeft") graph.pan(step, 0);
   else if (k === "ArrowRight") graph.pan(-step, 0);
   else if (k === "ArrowUp") graph.pan(0, step);
@@ -587,12 +596,56 @@ addEventListener("keydown", (e) => {
   else if (k === "Escape" && !$("#graph-view").hidden) $("#gv-btn").click();
   else if (k === "Escape" && graph.isLocal()) { graph.setLocal(false); renderPanel(graph.selected()); }
   else if (k === "Escape" && graph.selected()) graph.select(null);
+  else if (k === "Escape" && graphFull()) setGraphFull(false);
   else if (k === "Enter" && graph.selected() && !(t.closest && t.closest("button, a"))) {
     const s = graph.selected();
     if (s.kind === "record") openRecord(s.id); else go(`#project/${encodeURIComponent(s.pkey)}`);
   } else return;
   e.preventDefault();
 });
+
+// ---- Граф во весь экран: вместе с фильтрами и поиском. Где браузер так не умеет (iPhone), растягиваем поверх страницы.
+const ICON_EXPAND = `<svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 6V2.5H6M10 2.5h3.5V6M13.5 10v3.5H10M6 13.5H2.5V10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const ICON_COLLAPSE = `<svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 2.5V6H2.5M13.5 6H10V2.5M10 13.5V10h3.5M2.5 10H6v3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+const fsElement = () => document.fullscreenElement || document.webkitFullscreenElement || null;
+const graphFull = () => $("#graph-stage").classList.contains("full");
+function setGraphFull(on) {
+  const stage = $("#graph-stage");
+  if (on === graphFull()) return;
+  if (!on) {
+    if (fsElement() === stage) (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+    else markFull(false);
+    return;
+  }
+  const req = stage.requestFullscreen || stage.webkitRequestFullscreen;
+  if (!req) return markFull(true, true);
+  const fallback = () => { if (fsElement() !== stage && !graphFull()) markFull(true, true); };
+  try {
+    const p = req.call(stage);
+    if (p && p.catch) p.catch(fallback);
+  } catch { fallback(); }
+  // Бывает, что браузер молча не разворачивает (встроенные окна, запрет на уровне страницы) — не ждём вечно.
+  setTimeout(fallback, 700);
+}
+function markFull(on, fallback) {
+  const stage = $("#graph-stage"), btn = $("#g-full");
+  stage.classList.toggle("full", on);
+  stage.classList.toggle("fallback", on && !!fallback);
+  document.documentElement.classList.toggle("graph-full", on && !!fallback);
+  btn.setAttribute("aria-pressed", on);
+  btn.setAttribute("aria-label", on ? "Свернуть граф" : "Граф на весь экран");
+  btn.title = on ? "Свернуть (F)" : "На весь экран (F)";
+  btn.innerHTML = on ? ICON_COLLAPSE : ICON_EXPAND;
+  // Подсказка при наведении тоже должна жить внутри развёрнутого элемента, иначе её не видно.
+  (on ? stage : document.body).append($("#tip"));
+}
+for (const ev of ["fullscreenchange", "webkitfullscreenchange"]) {
+  document.addEventListener(ev, () => {
+    const stage = $("#graph-stage");
+    if (fsElement() === stage) markFull(true, false);
+    else if (graphFull() && !stage.classList.contains("fallback")) markFull(false);
+  });
+}
 
 // ---- 03 Проекты
 let gridReady = false, psort = "recent", pq = "";
@@ -819,7 +872,8 @@ function openRecord(id) {
     if (g) { closeRecord(true); go(`#graph/${g.dataset.graph}`); return; }
     if (e.target.closest("a[href^='#']")) closeRecord(true);
   });
-  document.body.append(scrimEl, d);
+  // Во весь экран браузер показывает только развёрнутый элемент, поэтому карточку кладём в него.
+  (fsElement() || document.body).append(scrimEl, d);
   d.querySelector(".close").focus();
 }
 function closeRecord(silent) {
@@ -847,7 +901,6 @@ addEventListener("resize", () => {
   clearTimeout(resizeTimer);
   resizeTimer = setTimeout(() => {
     if (current?.tab === "overview") drawWeekly();
-    if (current?.tab === "graph" && graph) graph.resize();
   }, 100);
 });
 

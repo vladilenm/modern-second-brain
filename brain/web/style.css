@@ -239,6 +239,16 @@ input[type=search]:focus { outline: none; border-color: var(--color-accent); box
 .fresh .d { font: 400 12px var(--font-mono); color: var(--color-ink-subtle); white-space: nowrap; }
 
 /* Граф */
+.graph-stage { display: grid; gap: var(--space-5); min-width: 0; }
+/* Во весь экран: фильтры сверху, граф на всё остальное место. */
+.graph-stage.full { display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-4); background: var(--color-bg); overflow: hidden; }
+.graph-stage.full .graph-box { flex: 1 1 auto; height: auto; min-height: 0; }
+.graph-stage.fallback {
+  position: fixed; inset: 0; z-index: 35;
+  padding: max(var(--space-3), env(safe-area-inset-top)) max(var(--space-3), env(safe-area-inset-right))
+    max(var(--space-3), env(safe-area-inset-bottom)) max(var(--space-3), env(safe-area-inset-left));
+}
+html.graph-full { overflow: hidden; }
 .graph-controls { display: flex; flex-wrap: wrap; gap: var(--space-3); align-items: center; }
 .graph-search { display: flex; align-items: center; gap: var(--space-3); flex: 1 1 320px; min-width: 0; }
 .graph-search input[type=search] { flex: 1 1 200px; max-width: 340px; }
@@ -275,6 +285,8 @@ input[type=search]:focus { outline: none; border-color: var(--color-accent); box
   transition: color var(--duration-fast) var(--ease-standard);
 }
 .graph-bar button:hover { color: var(--color-accent-text); }
+.graph-bar button svg { display: block; margin: 0 auto; }
+.graph-bar button[aria-pressed="true"] { color: var(--color-accent-text); }
 .graph-bar button[aria-expanded="true"] { color: var(--color-accent-text); box-shadow: inset 0 0 0 1px var(--color-accent); }
 .graph-view {
   position: absolute; top: calc(100% + var(--space-2)); left: 0; width: 300px; max-width: calc(100vw - 48px);

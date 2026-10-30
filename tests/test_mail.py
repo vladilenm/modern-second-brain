@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT))
 
 from brain import db, keychain  # noqa: E402
 from brain import sync as sync_mod  # noqa: E402
-from brain.connectors import mail, mailbox, mailparse  # noqa: E402
+from brain.connectors import mail, mailbox, mailparse, yandex_mail  # noqa: E402
 from brain.connectors.gmail import GmailConnector  # noqa: E402
 from brain.connectors.mailbox import AuthFailed, Fetched, Folder  # noqa: E402
 from brain.connectors.yandex_mail import YandexMailConnector  # noqa: E402
@@ -176,7 +176,8 @@ class FakeIMAP:
 
     def uid(self, command, *args):
         self.calls.append((command,) + args)
-        return "OK", self.replies.get(command, [b""])
+        reply = self.replies.get(command, [b""])
+        return reply(*args) if callable(reply) else ("OK", reply)
 
     def logout(self):
         self.calls.append(("logout",))
@@ -228,10 +229,17 @@ class MailboxTests(unittest.TestCase):
         self.assertEqual(imap.calls[-1], ("SEARCH", "X-GM-THRID", "123", "X-GM-RAW", '"in:sent OR is:starred"'))
         box.uids_since(datetime(2024, 10, 7), flagged=True)
         self.assertEqual(imap.calls[-1], ("SEARCH", "FLAGGED", "SINCE", "07-Oct-2024"))
-        box.uids_in_thread("a1@x.ru")
-        self.assertEqual(imap.calls[-1], ("SEARCH", "OR", "OR", "HEADER", "Message-ID", '"a1@x.ru"',
-                                          "HEADER", "References", '"a1@x.ru"', "HEADER", "In-Reply-To", '"a1@x.ru"'))
         self.assertEqual(mailbox.gmail_date(datetime(2024, 10, 7)), "2024/10/07")
+
+    def test_unavailable_letters_are_skipped(self):
+        def fetch(uids, items):
+            # Яндекс отвечает NO на всю пачку, если в ней есть недоступное (зашифрованное) письмо.
+            if "," in uids or uids == "12":
+                return "NO", [b"[UNAVAILABLE] UID FETCH Completed."]
+            return "OK", [b"1 (UID %s FLAGS (\\Seen))" % uids.encode()]
+
+        box, imap = open_box({"FETCH": fetch})
+        self.assertEqual([f.uid for f in box.fetch([11, 12, 13], body=False)], [11, 13])
 
     def test_wrong_password(self):
         imap = FakeIMAP()
@@ -254,8 +262,10 @@ class FakeMailbox:
     def __init__(self, mails, folders, validity=1):
         self.mails, self.folder_list, self.validity = mails, folders, validity
         self.selected = None
-        self.selects, self.searches, self.calls = [], [], []
+        self.selects, self.searches, self.calls, self.header_calls = [], [], [], []
         self.closed = False
+        self.reconnects = 0
+        self.drops = 0  # сколько ближайших запросов заголовков оборвать, как делает Яндекс
 
     def folders(self):
         return self.folder_list
@@ -276,14 +286,6 @@ class FakeMailbox:
         floor = to_iso(day.timestamp())
         return sorted(m.uid for m in self._here() if m.date >= floor and (not flagged or "\\Flagged" in m.flags))
 
-    def uids_in_thread(self, root):
-        out = []
-        for m in self._here():
-            p = mailparse.parse(m.raw)
-            if root in (p.message_id, p.in_reply_to) or root in p.references:
-                out.append(m.uid)
-        return sorted(out)
-
     def gmail_search(self, query, thread=""):
         self.searches.append(query)
         after = re.search(r"after:(\d{4})/(\d\d)/(\d\d)", query)
@@ -302,13 +304,22 @@ class FakeMailbox:
 
     def headers(self, uids):
         wanted = set(uids)
-        return {m.uid: mailparse.parse(m.raw) for m in self._here() if m.uid in wanted}
+        self.header_calls.append((self.selected, tuple(sorted(wanted))))
+        if self.drops:
+            self.drops -= 1
+            raise imaplib.IMAP4.abort("command: UID => socket error: EOF")
+        # Недоступные письма (у Яндекса — с флагом encrypted) сервер молча не отдаёт.
+        return {m.uid: mailparse.parse(m.raw) for m in self._here() if m.uid in wanted and "encrypted" not in m.flags}
 
     def fetch(self, uids, body=True):
         wanted = set(uids)
         self.calls.append(("fetch", self.selected, tuple(sorted(wanted)), body))
         return [Fetched(uid=m.uid, raw=m.raw if body else b"", flags=list(m.flags), labels=list(m.labels),
                         thread=m.thread, internal_date=m.date) for m in self._here() if m.uid in wanted]
+
+    def reconnect(self):
+        self.reconnects += 1
+        return self
 
     def close(self):
         self.closed = True
@@ -456,6 +467,12 @@ class GmailTests(MailCase):
         with mock.patch.object(GmailConnector, "open_mailbox", refuse):
             self.sync()
         self.assertEqual(self.last_error(), "Gmail: почта не пускает — проверь пароль приложения")
+        def drop(connector, address, secret):
+            raise imaplib.IMAP4.abort("command: CAPABILITY => problems with connection")
+
+        with mock.patch.object(GmailConnector, "open_mailbox", drop):
+            self.sync()
+        self.assertEqual(self.last_error(), "Gmail: ошибка IMAP (command: CAPABILITY => problems with connection)")
         self.cfg["sources"]["gmail"]["address"] = ""
         self.sync()
         self.assertEqual(self.last_error(), "Gmail: в config.json не задан address")
@@ -493,6 +510,10 @@ class YandexTests(MailCase):
     def make_box(self):
         return FakeMailbox(yandex_mails(), list(YANDEX_FOLDERS))
 
+    def bodies(self):
+        """Какие письма скачивались целиком: (папка, uid)."""
+        return {(call[1], uid) for call in self.box.calls if call[3] for uid in call[2]}
+
     def test_first_run_takes_my_and_flagged_threads(self):
         totals = self.sync()
         self.assertEqual((totals["new"], totals["errors"]), (2, 0))
@@ -505,9 +526,14 @@ class YandexTests(MailCase):
         self.assertNotIn("Купи.", order["body"])
         self.assertNotIn("Spam", self.box.selects)
         self.assertNotIn("Drafts", self.box.selects)
-        cursor = json.loads(db.get_cursor(self.conn, "yandex_mail"))
-        self.assertEqual(cursor["flagged"], ["c1@corp.ru"])
-        self.assertEqual(cursor["folders"]["INBOX"], {"validity": 1, "uid": 3})
+        self.assertEqual(json.loads(db.get_cursor(self.conn, "yandex_mail")), {"flagged": ["c1@corp.ru"]})
+        # Тела качали только у моих тредов: рассылка b1 и чужая переписка e1 обошлись заголовками.
+        self.assertEqual(self.bodies(), {("INBOX", 1), ("Sent", 1), ("Работа", 1)})
+        indexed = self.conn.execute(
+            "SELECT folder, uid, root, pending FROM mail_index WHERE source = 'yandex_mail' ORDER BY folder, uid").fetchall()
+        self.assertEqual([tuple(r) for r in indexed], [
+            ("INBOX", 1, "a1@shop.ru", 0), ("INBOX", 2, "b1@news.ru", 0), ("INBOX", 3, "e1@list.ru", 0),
+            ("Sent", 1, "a1@shop.ru", 0), ("Работа", 1, "c1@corp.ru", 0)])
 
     def test_reply_rebuilds_thread_and_newsletter_costs_nothing(self):
         self.sync()
@@ -519,12 +545,15 @@ class YandexTests(MailCase):
             FakeMail("INBOX", 5, eml("b2@news.ru", "news@news.ru", "me@yandex.ru", "Акции 2", text="Ещё скидки.")),
         ]
         self.box.calls.clear()
+        self.box.header_calls.clear()
         totals = self.sync()
         self.assertEqual((totals["new"], totals["changed"]), (0, 1))
         self.assertIn("Завтра.", self.records()["root:a1@shop.ru"]["body"])
-        self.assertFalse(any(5 in call[2] for call in self.box.calls))
+        self.assertNotIn(("INBOX", 5), self.bodies())
+        # Заголовки повторно не читаются: только новые письма.
+        self.assertEqual([c for c in self.box.header_calls if c[1]], [("INBOX", (4, 5))])
 
-    def test_foreign_thread_is_checked_by_flags_only(self):
+    def test_foreign_reply_costs_no_body(self):
         self.sync()
         self.box.mails.append(FakeMail("INBOX", 4, eml("e3@list.ru", "ann@list.ru", "team@list.ru", "Re: Встреча",
                                                        text="И я.", in_reply_to="e2@list.ru",
@@ -532,8 +561,74 @@ class YandexTests(MailCase):
         self.box.calls.clear()
         totals = self.sync()
         self.assertEqual((totals["new"], totals["changed"]), (0, 0))
-        self.assertIn(("fetch", "INBOX", (3, 4), False), self.box.calls)
-        self.assertNotIn(("fetch", "INBOX", (3, 4), True), self.box.calls)
+        self.assertEqual(self.bodies(), set())
+
+    def test_interrupted_pass_resumes_without_rereading_headers(self):
+        original = YandexMailConnector.thread
+
+        def flaky(connector, box, key):
+            if key == "c1@corp.ru":
+                raise imaplib.IMAP4.abort("socket error: EOF")
+            return original(connector, box, key)
+
+        with mock.patch.object(YandexMailConnector, "thread", flaky), mock.patch.object(mail, "THREAD_BATCH", 1):
+            totals = self.sync()
+        self.assertEqual((totals["new"], totals["errors"]), (1, 1))
+        self.assertIn("Яндекс.Почта: ошибка IMAP (socket error: EOF)", self.last_error())
+        headers_read = list(self.box.header_calls)
+        totals = self.sync()
+        self.assertEqual((totals["new"], totals["changed"], totals["errors"]), (1, 0, 0))
+        self.assertIn("root:c1@corp.ru", self.records())
+        self.assertEqual([c for c in self.box.header_calls if c[1]], [c for c in headers_read if c[1]])
+
+    def test_dropped_connection_is_reopened(self):
+        self.box.drops = 1
+        totals = self.sync()
+        self.assertEqual((totals["new"], totals["errors"]), (2, 0))
+        self.assertEqual(self.box.reconnects, 2)  # после обрыва и перед остатком прогона, после индексации
+
+    def test_long_session_is_refreshed(self):
+        with mock.patch.object(yandex_mail, "RECONNECT_EVERY", 2):
+            totals = self.sync()
+        self.assertEqual((totals["new"], totals["errors"]), (2, 0))
+        self.assertGreaterEqual(self.box.reconnects, 3)  # и при индексации, и при сборке тредов
+
+    def test_no_reconnect_when_nothing_to_index(self):
+        self.sync()
+        self.box.reconnects = 0
+        self.sync()
+        self.assertEqual(self.box.reconnects, 0)
+
+    def test_unreadable_letter_does_not_stall_index(self):
+        self.box.mails.append(FakeMail("INBOX", 4, eml("x1@bank.ru", "bank@bank.ru", "me@yandex.ru", "Выписка",
+                                                       text="Секретно."), flags=["encrypted"]))
+        self.assertEqual(self.sync()["errors"], 0)
+        row = self.conn.execute("SELECT root, pending FROM mail_index WHERE folder = 'INBOX' AND uid = 4").fetchone()
+        self.assertEqual(tuple(row), ("", 0))
+        self.box.header_calls.clear()
+        self.sync()
+        self.assertEqual([c for c in self.box.header_calls if c[1]], [])  # к нему больше не возвращаемся
+
+    def test_index_is_filled_across_runs_within_time_budget(self):
+        self.cfg["sources"]["yandex_mail"]["index_budget_seconds"] = 0
+        self.assertEqual(self.sync()["new"], 0)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM mail_index").fetchone()[0], 0)
+        self.cfg["sources"]["yandex_mail"]["index_budget_seconds"] = 300
+        self.assertEqual(self.sync()["new"], 2)
+
+    def test_sent_folder_is_indexed_first(self):
+        self.sync()
+        indexed = [c[0] for c in self.box.header_calls if c[1]]
+        self.assertEqual(indexed[0], "Sent")
+
+    def test_uidvalidity_change_reindexes_folder(self):
+        self.sync()
+        self.box.validity = 2
+        self.box.header_calls.clear()
+        totals = self.sync()
+        self.assertEqual((totals["new"], totals["changed"], totals["errors"]), (0, 0, 0))
+        self.assertIn(("INBOX", (1, 2, 3)), self.box.header_calls)
+        self.assertEqual({r[0] for r in self.conn.execute("SELECT validity FROM mail_index")}, {2})
 
     def test_new_flag_adds_its_thread(self):
         self.sync()

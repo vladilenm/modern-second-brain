@@ -104,6 +104,6 @@ def load() -> dict:
         cfg = _merge(cfg, json.loads(path.read_text(encoding="utf-8")))
     if os.environ.get("BRAIN_DB"):
         cfg["db_path"] = os.environ["BRAIN_DB"]
-    if os.environ.get("BRAIN_LLM_API_KEY"):
+    if os.environ.get("BRAIN_LLM_API_KEY") and cfg["llm"].get("use_env_key", True):
         cfg["llm"]["api_key"] = os.environ["BRAIN_LLM_API_KEY"]
     return cfg

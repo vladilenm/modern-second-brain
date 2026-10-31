@@ -108,6 +108,23 @@ def cmd_mcp(args, cfg) -> int:
     return 0
 
 
+def cmd_model(args, cfg) -> int:
+    from . import llm_settings
+    try:
+        if args.action == "show":
+            result = llm_settings.describe()
+        else:
+            payload = json.loads(sys.stdin.read(65537))
+            if not isinstance(payload, dict):
+                raise ValueError("Ожидается JSON-объект настроек.")
+            result = llm_settings.models(payload) if args.action == "models" else llm_settings.save(payload)
+        print(json.dumps(result, ensure_ascii=False))
+        return 0
+    except (ValueError, OSError, RuntimeError) as exc:
+        print(json.dumps({"error": str(exc)}, ensure_ascii=False))
+        return 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="brain", description="Второй мозг: поиск по прошлой работе — "
                                                           "разговорам с ИИ и подключённым источникам")
@@ -147,6 +164,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser("mcp", help="запустить MCP-сервер (stdio)")
     s.set_defaults(func=cmd_mcp)
+
+    s = sub.add_parser("model", help="модель пересказа: настройки и список моделей (JSON)")
+    s.add_argument("action", choices=("show", "models", "save"))
+    s.set_defaults(func=cmd_model)
     return p
 
 
@@ -156,7 +177,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not getattr(args, "func", None):
         parser.print_help()
         return 1
-    return args.func(args, config.load())
+    return args.func(args, None if args.command == "model" else config.load())
 
 
 if __name__ == "__main__":

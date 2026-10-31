@@ -24,10 +24,14 @@ class MenubarTests(unittest.TestCase):
         cls.binary = bundle / "MacOS" / "BrainBar"
         subprocess.run(["xcrun", "swiftc", "-swift-version", "5", "-parse-as-library",
                         "-module-cache-path", str(cls.tmp / "cache"), "-o", str(cls.binary),
-                        str(source / "BrainBar.swift"), str(source / "MenuViews.swift")],
+                        str(source / "BrainBar.swift"), str(source / "MenuViews.swift"),
+                        str(source / "ModelSettings.swift")],
                        check=True, capture_output=True, timeout=120)
 
     def setUp(self):
+        self.config_path = self.tmp / "config.json"
+        self.config_path.write_text(json.dumps({"llm": {"base_url": "https://api.openai.com/v1",
+                                                       "model": "test-model", "api_key": "test-secret"}}))
         self.status = {
             "state": "idle", "last_sync_at": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "pending": 0, "sync_errors": [],
@@ -40,6 +44,7 @@ class MenubarTests(unittest.TestCase):
         path = self.tmp / "status.json"
         path.write_text(json.dumps(self.status if state is None else state))
         result = subprocess.run([str(self.binary), "--dump", "--status", str(path)],
+                                env={**os.environ, "BRAIN_CONFIG": str(self.config_path), "BRAIN_LLM_API_KEY": ""},
                                 check=True, capture_output=True, text=True, timeout=15)
         self.assertIn("значок:", result.stdout, "AppKit не запустился: тесту нужен доступ к сессии macOS")
         return result.stdout
@@ -50,9 +55,20 @@ class MenubarTests(unittest.TestCase):
         self.assertIn("предупреждение: false", menu)
         self.assertIn("10 записей · 1 источник", menu)
         self.assertLess(menu.index("Открыть базу"), menu.index("Источники"))
-        self.assertIn("Настройки  ▸\n    Запускать при входе", menu)
+        self.assertIn("Настройки  ▸\n    OpenAI · test-model\n    Модель и провайдер…", menu)
+        self.assertIn("    Запускать при входе", menu)
         self.assertIn("    Открыть журнал", menu)
         self.assertNotIn("Синхронизировать сейчас [недоступно]", menu)
+        self.assertNotIn("test-secret", menu)
+
+    def test_active_model_is_distinct_from_next_run_choice(self):
+        self.status.update(state="summarize", pid=os.getpid(),
+                           processor={"provider": "SimpleClaw", "model": "old-model"})
+        menu = self.dump()
+        self.assertIn("модель: SimpleClaw · old-model", menu)
+        self.assertIn("Следующий запуск: OpenAI · test-model", menu)
+        self.status["state"] = "idle"
+        self.assertIn("модель: OpenAI · test-model", self.dump())
 
     def test_source_error_is_visible_even_when_run_finished(self):
         self.status["sync_errors"] = [{"source": "kimi", "error": "Не прочитан журнал"}]

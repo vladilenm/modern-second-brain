@@ -86,6 +86,11 @@ final class BrainBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var syncBaseline: String?
     var actionError: String?
     var inputPath = statusPath
+    var modelSettings: [String: Any] = [:]
+    var modelSettingsError: String?
+    var loadingModelSettings = false
+    var processorView: ProcessorView?
+    var modelWindow: ModelSettingsWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -99,9 +104,32 @@ final class BrainBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
         item.menu = menu
         self.item = item
         refresh()
+        loadModelSettings()
+        installEditingMenu()
         let timer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in self?.refresh() }
         RunLoop.main.add(timer, forMode: .common) // Продолжать обновлять прогресс и при открытом меню.
         self.timer = timer
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        openModelSettings()
+        return true
+    }
+
+    /// Стандартные команды редактирования для полей окна настроек, включая вставку ключа.
+    func installEditingMenu() {
+        let main = NSMenu()
+        let appMenu = NSMenu()
+        let appItem = NSMenuItem(); appItem.submenu = appMenu; main.addItem(appItem)
+        command("Модель и провайдер…", #selector(openModelSettings), icon: "sparkles", key: ",", in: appMenu)
+        command("Завершить BrainBar", #selector(quit), icon: "power", key: "q", in: appMenu)
+        let edit = NSMenu(title: "Правка")
+        let editItem = NSMenuItem(); editItem.submenu = edit; main.addItem(editItem)
+        for (title, action, key) in [("Вырезать", "cut:", "x"), ("Копировать", "copy:", "c"),
+                                     ("Вставить", "paste:", "v"), ("Выбрать всё", "selectAll:", "a")] {
+            edit.addItem(withTitle: title, action: NSSelectorFromString(action), keyEquivalent: key)
+        }
+        NSApp.mainMenu = main
     }
 
     // MARK: состояние
@@ -128,6 +156,7 @@ final class BrainBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
             summaryView?.update(summary())
             syncItem?.isEnabled = !busy
             syncItem?.title = syncTitle
+            updateProcessorView()
         }
     }
 
@@ -293,7 +322,7 @@ final class BrainBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return child
     }
 
-    func menuWillOpen(_ menu: NSMenu) { menuIsOpen = true }
+    func menuWillOpen(_ menu: NSMenu) { menuIsOpen = true; loadModelSettings() }
     func menuDidClose(_ menu: NSMenu) { menuIsOpen = false }
 
     func menuNeedsUpdate(_ target: NSMenu) {
@@ -329,6 +358,13 @@ final class BrainBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
             sub.addItem(table)
         }
         let settings = submenu("Настройки", icon: "gearshape")
+        let processor = NSMenuItem(title: processorSummary.title, action: nil, keyEquivalent: "")
+        let processorView = ProcessorView(processorSummary.title, detail: processorSummary.detail)
+        processor.view = processorView
+        self.processorView = processorView
+        settings.addItem(processor)
+        command("Модель и провайдер…", #selector(openModelSettings), icon: "sparkles", key: ",", in: settings)
+        settings.addItem(.separator())
         command("Запускать при входе", #selector(toggleLogin), icon: "person.crop.circle", in: settings).state =
             SMAppService.mainApp.status == .enabled ? .on : .off
         settings.addItem(.separator())
@@ -340,6 +376,48 @@ final class BrainBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     // MARK: действия
+
+    var processorSummary: (title: String, detail: String) {
+        let chosen = modelSettings["current"] as? [String: Any] ?? [:]
+        if busy, let active = status["processor"] as? [String: Any], !(active["model"] as? String ?? "").isEmpty {
+            let next = processorTitle(chosen)
+            return (processorTitle(active), chosen.isEmpty || next == processorTitle(active)
+                    ? "Обрабатывает текущий запуск" : "Следующий запуск: " + next)
+        }
+        if let error = modelSettingsError { return ("Не удалось прочитать настройки", error) }
+        return chosen.isEmpty ? ("Загружаю настройки…", "Провайдер и модель для новых карточек")
+            : (processorTitle(chosen), "Для новых карточек")
+    }
+
+    func updateProcessorView() {
+        processorView?.update(processorSummary.title, detail: processorSummary.detail)
+    }
+
+    func loadModelSettings() {
+        guard !loadingModelSettings else { return }
+        loadingModelSettings = true
+        ModelSettingsClient.request("show") { [weak self] result in
+            guard let self = self else { return }
+            self.loadingModelSettings = false
+            switch result {
+            case .success(let data): self.modelSettings = data; self.modelSettingsError = nil
+            case .failure(let error): self.modelSettingsError = error.localizedDescription
+            }
+            self.updateProcessorView()
+        }
+    }
+
+    @objc func openModelSettings() {
+        if modelWindow == nil {
+            modelWindow = ModelSettingsWindow()
+            modelWindow?.onSave = { [weak self] data in
+                self?.modelSettings = data
+                self?.modelSettingsError = nil
+                self?.updateProcessorView()
+            }
+        }
+        modelWindow?.open()
+    }
 
     @objc func syncNow() {
         guard !busy else { return }
@@ -422,6 +500,8 @@ final class BrainBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     /// Текст меню без интерфейса — для проверки из терминала.
     func dump() {
+        do { modelSettings = try ModelSettingsClient.requestSync("show") }
+        catch { modelSettingsError = error.localizedDescription }
         refresh()
         menuNeedsUpdate(menu)
         print("значок: [\(state)] \(headline())")
@@ -430,6 +510,7 @@ final class BrainBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
         print("\(s.counts)\n\(s.timing)")
         if !s.detail.isEmpty { print(s.detail) }
         if let fraction = s.fraction { print("прогресс: \(Int(fraction * 100))%") }
+        print("модель: \(processorSummary.title)\n\(processorSummary.detail)")
         for mi in menu.items {
             if mi.isSeparatorItem { print("—"); continue }
             print(mi.title + (!mi.isEnabled ? " [недоступно]" : "") + (mi.hasSubmenu ? "  ▸" : ""))

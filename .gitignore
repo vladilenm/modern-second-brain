@@ -2,6 +2,7 @@
 data/
 inbox/
 config.json
+.config.json.*.tmp
 __pycache__/
 *.pyc
 menubar/build/

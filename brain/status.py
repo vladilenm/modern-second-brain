@@ -11,7 +11,7 @@ import sqlite3
 from pathlib import Path
 from typing import Optional
 
-from . import connectors, summarize
+from . import connectors, llm_settings, summarize
 from .timeutil import now_iso
 
 
@@ -59,6 +59,7 @@ class Reporter:
         self.conn = conn
         self.data = read(self.path)
         self.data.update(pid=os.getpid(), started_at=now_iso(), finished_at=None, error=None, progress=None)
+        self.data["processor"] = llm_settings.processor(cfg["llm"])
         self.data.update(snapshot(conn))
 
     def update(self, **fields) -> None:

@@ -11,7 +11,6 @@ let statusPath = brainDir + "/data/status.json"
 let logPath = home + "/Library/Logs/brain-sync.log"
 let agentLabel = "com.vladilen.brain-sync"
 let syncInterval: TimeInterval = 15 * 60  // агент запускается в :00, :15, :30 и :45
-let batchLimit = 40  // llm.batch_limit: сколько карточек делает один прогон
 let builtinSources: [(key: String, name: String)] = [("claude_code", "Claude Code"), ("codex", "Codex"), ("chatgpt", "ChatGPT")]
 
 /// Список источников пишет brain в status.json (sources_meta); встроенный — на случай старого файла.
@@ -79,6 +78,14 @@ final class BrainBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
     let menu = NSMenu()
     var status: [String: Any] = [:]
     var timer: Timer?
+    var summaryView: SummaryView?
+    var syncItem: NSMenuItem?
+    var menuIsOpen = false
+    var startingSync = false
+    var syncRequestedAt: Date?
+    var syncBaseline: String?
+    var actionError: String?
+    var inputPath = statusPath
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
@@ -88,22 +95,40 @@ final class BrainBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
             item.button?.imagePosition = .imageLeading
         }
         menu.delegate = self
+        menu.autoenablesItems = false
         item.menu = menu
         self.item = item
         refresh()
-        timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in self?.refresh() }
+        let timer = Timer(timeInterval: 2, repeats: true) { [weak self] _ in self?.refresh() }
+        RunLoop.main.add(timer, forMode: .common) // Продолжать обновлять прогресс и при открытом меню.
+        self.timer = timer
     }
 
     // MARK: состояние
 
     func refresh() {
-        if let data = FileManager.default.contents(atPath: statusPath),
+        if let data = FileManager.default.contents(atPath: inputPath),
            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             status = object
         } else {
             status = [:]
         }
+        if startingSync {
+            if state == "sync" || state == "summarize" || (status["last_sync_at"] as? String) != syncBaseline {
+                startingSync = false
+                syncRequestedAt = nil
+            } else if let requested = syncRequestedAt, Date().timeIntervalSince(requested) > 15 {
+                startingSync = false
+                syncRequestedAt = nil
+                actionError = "Синхронизация не началась"
+            }
+        }
         updateButton()
+        if menuIsOpen {
+            summaryView?.update(summary())
+            syncItem?.isEnabled = !busy
+            syncItem?.title = syncTitle
+        }
     }
 
     /// Состояние с поправкой на процесс, который умер посреди работы.
@@ -126,19 +151,47 @@ final class BrainBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var stale: Bool { lastSync.map { Date().timeIntervalSince($0) > syncInterval * 3 } ?? false }
 
     var pending: Int { status["pending"] as? Int ?? 0 }
+    var busy: Bool { startingSync || state == "sync" || state == "summarize" }
+    var syncErrors: [[String: Any]] { status["sync_errors"] as? [[String: Any]] ?? [] }
+    var needsAttention: Bool { actionError != nil || state == "error" || state == "interrupted" || stale || !syncErrors.isEmpty }
+
+    func sourceName(_ key: String) -> String {
+        let meta = status["sources_meta"] as? [[String: Any]] ?? []
+        return meta.first { ($0["source"] as? String) == key || ($0["connector"] as? String) == key }?["title"] as? String
+            ?? sourceOrder(status).first { $0.key == key }?.name ?? key
+    }
+
+    var sources: [SourceSummary] {
+        let data = status["sources"] as? [String: [String: Any]] ?? [:]
+        let order = sourceOrder(status).map { $0.key }
+        let keys = order.filter { data[$0] != nil } + data.keys.filter { !order.contains($0) }.sorted()
+        return keys.map { key in
+            let s = data[key] ?? [:]
+            let name = sourceName(key)
+            let error = syncErrors.first { sourceName($0["source"] as? String ?? "") == name }?["error"] as? String
+            return SourceSummary(name: name, records: s["records"] as? Int ?? 0,
+                                 cards: s["summarized"] as? Int ?? 0, error: error)
+        }
+    }
+
+    var syncTitle: String {
+        if startingSync { return "Запускаю синхронизацию…" }
+        if busy { return "Синхронизация идёт…" }
+        return "Синхронизировать сейчас"
+    }
 
     func updateButton() {
         guard let button = item?.button else { return }
         let prefix = button.image == nil ? "🧠" : ""
         var suffix = ""
         var tip: String
-        switch state {
+        switch startingSync ? "sync" : state {
         case "sync":
             suffix = " ↻"
             tip = "Второй мозг: забираю новые разговоры"
         case "summarize":
             let p = progress
-            suffix = " \(min(p.done + 1, p.total))/\(p.total)"
+            suffix = p.total > 0 ? " \(p.done)/\(p.total)" : " ↻"
             tip = "Второй мозг: пересказываю «\(shorten(p.current, 80))»"
         case "error", "interrupted":
             suffix = " !"
@@ -147,12 +200,16 @@ final class BrainBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
             suffix = " ?"
             tip = "Второй мозг: синхронизация ещё не запускалась"
         default:
-            if stale {
+            if needsAttention {
                 suffix = " !"
-                tip = "Второй мозг: давно не было синхронизации"
+                tip = "Второй мозг: \(headline())"
             } else {
                 tip = "Второй мозг: всё синхронизировано" + (pending > 0 ? ", без карточки ещё \(pending)" : "")
             }
+        }
+        if actionError != nil {
+            suffix = " !"
+            tip = "Второй мозг: \(headline())"
         }
         button.title = prefix + suffix
         button.toolTip = tip
@@ -161,115 +218,164 @@ final class BrainBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: меню
 
     func headline() -> String {
+        if let error = actionError { return error }
+        if startingSync { return "Запускаю синхронизацию…" }
         switch state {
-        case "sync": return "Забираю новые разговоры…"
+        case "sync": return "Обновляю базу…"
         case "summarize":
             let p = progress
-            return "Пересказываю \(min(p.done + 1, p.total)) из \(p.total)…"
-        case "error": return "Последний прогон завершился ошибкой"
-        case "interrupted": return "Последний прогон прервался"
-        case "none": return "Синхронизация ещё не запускалась"
+            return p.total > 0 ? "Создаю карточки · \(p.done) из \(p.total)" : "Создаю карточки…"
+        case "error": return "Не удалось обновить базу"
+        case "interrupted": return "Синхронизация прервалась"
+        case "none": return "Готов к первой синхронизации"
         default:
-            return pending > 0
-                ? "Работает · \(pending) \(plural(pending, "разговор", "разговора", "разговоров")) ещё без карточки"
-                : "Работает · у всех разговоров есть карточки"
+            if !syncErrors.isEmpty { return "Есть ошибки синхронизации" }
+            if stale { return "Давно не обновлялось" }
+            return pending > 0 ? "Карточки ожидают обработки" : "Всё синхронизировано"
         }
     }
 
-    func info(_ text: String, bold: Bool = false) {
-        let mi = NSMenuItem(title: text, action: nil, keyEquivalent: "")
-        if bold {
-            mi.attributedTitle = NSAttributedString(
-                string: text, attributes: [.font: NSFont.boldSystemFont(ofSize: NSFont.systemFontSize)])
+    func summary() -> MenuSummary {
+        let total = sources.reduce(0) { $0 + $1.records }
+        let counts = "\(total) \(plural(total, "запись", "записи", "записей")) · \(sources.count) \(plural(sources.count, "источник", "источника", "источников"))"
+        let timing = lastSync.map { "Запуск в \(clockFormatter.string(from: $0)) · Следующий в \(clockFormatter.string(from: nextRun()))" }
+            ?? "Автоматически каждые 15 минут"
+        var detail = ""
+        if actionError != nil || state == "error" || state == "interrupted" {
+            detail = "Попробуй синхронизировать ещё раз. Подробности — в журнале."
+        } else if state == "summarize" {
+            detail = progress.current.isEmpty ? "Готовлю краткое содержание для поиска." : "«\(shorten(progress.current, 90))»"
+        } else if !syncErrors.isEmpty {
+            detail = syncErrors.map { sourceName($0["source"] as? String ?? "") }.joined(separator: ", ")
+                + ". Подробности — в журнале."
+        } else if stale {
+            detail = "Последний запуск \(lastSync.map(ago) ?? "давно"). Можно обновить вручную."
+        } else if pending > 0 {
+            detail = "В очереди \(pending) \(plural(pending, "карточка", "карточки", "карточек")). Записи уже доступны в поиске."
         }
-        mi.isEnabled = false
-        menu.addItem(mi)
+        let appearance: (symbol: String, color: NSColor)
+        if actionError != nil {
+            appearance = ("exclamationmark.triangle.fill", .systemOrange)
+        } else if busy {
+            appearance = ("arrow.triangle.2.circlepath", .controlAccentColor)
+        } else if needsAttention {
+            appearance = ("exclamationmark.triangle.fill", .systemOrange)
+        } else if state == "none" || pending > 0 {
+            appearance = ("clock", .secondaryLabelColor)
+        } else {
+            appearance = ("checkmark.circle.fill", .systemGreen)
+        }
+        return MenuSummary(headline: headline(), symbol: appearance.symbol, color: appearance.color,
+                           counts: counts, timing: timing, detail: detail,
+                           fraction: state == "summarize" && progress.total > 0 ? Double(progress.done) / Double(progress.total) : nil)
     }
 
     @discardableResult
-    func command(_ title: String, _ selector: Selector, enabled: Bool = true) -> NSMenuItem {
-        let mi = NSMenuItem(title: title, action: enabled ? selector : nil, keyEquivalent: "")
+    func command(_ title: String, _ selector: Selector, icon: String, key: String = "",
+                 enabled: Bool = true, in target: NSMenu? = nil) -> NSMenuItem {
+        let mi = NSMenuItem(title: title, action: selector, keyEquivalent: key)
         mi.target = self
-        menu.addItem(mi)
+        mi.isEnabled = enabled
+        mi.image = NSImage(systemSymbolName: icon, accessibilityDescription: nil)
+        mi.image?.size = NSSize(width: 16, height: 16)
+        (target ?? menu).addItem(mi)
         return mi
     }
 
-    func menuNeedsUpdate(_ menu: NSMenu) {
+    func submenu(_ title: String, icon: String) -> NSMenu {
+        let child = NSMenu(title: title)
+        child.autoenablesItems = false
+        let parent = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        parent.image = NSImage(systemSymbolName: icon, accessibilityDescription: nil)
+        parent.image?.size = NSSize(width: 16, height: 16)
+        parent.submenu = child
+        menu.addItem(parent)
+        return child
+    }
+
+    func menuWillOpen(_ menu: NSMenu) { menuIsOpen = true }
+    func menuDidClose(_ menu: NSMenu) { menuIsOpen = false }
+
+    func menuNeedsUpdate(_ target: NSMenu) {
         refresh()
         menu.removeAllItems()
-        info(headline(), bold: true)
-        if state == "summarize", !progress.current.isEmpty { info("«\(shorten(progress.current, 60))»") }
-        if state == "error", let error = status["error"] as? String { info(shorten(error, 80)) }
-
-        if let last = lastSync {
-            menu.addItem(.separator())
-            info("Последняя синхронизация в \(clockFormatter.string(from: last)), \(ago(last))")
-            info("Следующая в \(clockFormatter.string(from: nextRun()))")
-            if stale { info("⚠︎ Давно не синхронизировалось — загляни в лог") }
-        }
-
-        let sources = status["sources"] as? [String: [String: Any]] ?? [:]
-        if !sources.isEmpty {
-            menu.addItem(.separator())
-            var total = 0
-            for (key, name) in sourceOrder(status) {
-                guard let s = sources[key] else { continue }
-                let records = s["records"] as? Int ?? 0
-                total += records
-                info("\(name): \(records), с карточкой \(s["summarized"] as? Int ?? 0)")
-            }
-            info("Всего \(total) · \(pending) без карточки")
-            if pending > 0 {
-                // Карточка — краткое содержание, ключевые слова и атомы от модели. Без неё ищется только сырой текст.
-                let runs = (pending + batchLimit - 1) / batchLimit
-                info(runs == 1
-                     ? "Карточки сделает синхронизация в \(clockFormatter.string(from: nextRun()))"
-                     : "Карточки сделают ближайшие \(runs) \(plural(runs, "синхронизация", "синхронизации", "синхронизаций"))")
-                info("Пока они ищутся только по тексту записи")
-            }
-        }
-        for e in status["sync_errors"] as? [[String: Any]] ?? [] {
-            info("⚠︎ \(e["source"] as? String ?? ""): \(shorten(e["error"] as? String ?? "", 70))")
-        }
+        let header = NSMenuItem(title: "Второй мозг", action: nil, keyEquivalent: "")
+        let view = SummaryView(summary())
+        header.view = view
+        summaryView = view
+        menu.addItem(header)
+        menu.addItem(.separator())
+        command("Открыть базу", #selector(openDashboard), icon: "rectangle.grid.2x2", key: "o")
+        syncItem = command(syncTitle, #selector(syncNow), icon: "arrow.triangle.2.circlepath", key: "r", enabled: !busy)
 
         let recent = status["recent"] as? [[String: Any]] ?? []
         if !recent.isEmpty {
-            menu.addItem(.separator())
-            let sub = NSMenu()
+            let sub = submenu("Последние карточки", icon: "clock.arrow.circlepath")
             for r in recent {
-                let mi = NSMenuItem(title: shorten(r["title"] as? String ?? "?", 60),
-                                    action: #selector(openRecord(_:)), keyEquivalent: "")
-                mi.target = self
+                let mi = command(shorten(r["title"] as? String ?? "Без названия", 48),
+                                 #selector(openRecord(_:)), icon: "doc.text", in: sub)
                 mi.representedObject = r["id"]
-                if let at = parseDate(r["at"]) { mi.toolTip = "пересказано \(ago(at))" }
-                sub.addItem(mi)
+                let source = sourceName(r["source"] as? String ?? "")
+                mi.toolTip = (r["title"] as? String ?? "") + "\n" + source
+                    + (parseDate(r["at"]).map { " · \(ago($0))" } ?? "")
             }
-            let parent = NSMenuItem(title: "Последние карточки", action: nil, keyEquivalent: "")
-            parent.submenu = sub
-            menu.addItem(parent)
         }
-
+        if needsAttention { command("Открыть журнал ошибок", #selector(openLog), icon: "exclamationmark.bubble") }
         menu.addItem(.separator())
-        command("Открыть базу", #selector(openDashboard))
-        command("Синхронизировать сейчас", #selector(syncNow), enabled: state != "sync" && state != "summarize")
-        command("Открыть лог", #selector(openLog))
-        command("Открыть папку ~/brain", #selector(openFolder))
-        command("Запускать при входе в систему", #selector(toggleLogin)).state =
+        if !sources.isEmpty {
+            let sub = submenu("Источники · \(sources.count)", icon: "square.stack.3d.up")
+            let table = NSMenuItem(title: "Статистика источников", action: nil, keyEquivalent: "")
+            table.view = SourcesView(sources)
+            sub.addItem(table)
+        }
+        let settings = submenu("Настройки", icon: "gearshape")
+        command("Запускать при входе", #selector(toggleLogin), icon: "person.crop.circle", in: settings).state =
             SMAppService.mainApp.status == .enabled ? .on : .off
+        settings.addItem(.separator())
+        command("Открыть журнал", #selector(openLog), icon: "doc.plaintext", in: settings)
+        command("Открыть папку проекта", #selector(openFolder), icon: "folder", in: settings)
         menu.addItem(.separator())
-        command("Выйти", #selector(quit))
+        command("Завершить BrainBar", #selector(quit), icon: "power", key: "q").toolTip =
+            "Синхронизация продолжит работать по расписанию."
     }
 
     // MARK: действия
 
     @objc func syncNow() {
-        run("/bin/launchctl", ["kickstart", "gui/\(getuid())/\(agentLabel)"])
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in self?.refresh() }
+        guard !busy else { return }
+        startingSync = true
+        syncRequestedAt = Date()
+        syncBaseline = status["last_sync_at"] as? String
+        actionError = nil
+        updateButton()
+        DispatchQueue.global(qos: .userInitiated).async {
+            let code = run("/bin/launchctl", ["kickstart", "gui/\(getuid())/\(agentLabel)"])
+            DispatchQueue.main.async {
+                if code != 0 {
+                    self.startingSync = false
+                    self.syncRequestedAt = nil
+                    self.actionError = "Не удалось запустить синхронизацию"
+                    self.refresh()
+                    return
+                }
+                // refresh снимет состояние запуска, когда Python обновит status.json.
+                self.refresh()
+            }
+        }
     }
 
     /// Свежая HTML-панель базы (brain dashboard) в браузере по умолчанию.
     @objc func openDashboard() {
-        run(brainDir + "/bin/brain", ["dashboard", "--open"])
+        actionError = nil
+        DispatchQueue.global(qos: .userInitiated).async {
+            let code = run(brainDir + "/bin/brain", ["dashboard", "--open"])
+            if code != 0 {
+                DispatchQueue.main.async {
+                    self.actionError = "Не удалось открыть базу"
+                    self.refresh()
+                }
+            }
+        }
     }
 
     @objc func openLog() {
@@ -287,10 +393,12 @@ final class BrainBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         let path = "\(dir)/\(id).txt"
         FileManager.default.createFile(atPath: path, contents: nil, attributes: [.posixPermissions: 0o600])
-        guard let out = FileHandle(forWritingAtPath: path) else { return }
-        run(brainDir + "/bin/brain", ["show", String(id), "--chars", "1000000"], stdout: out)
-        try? out.close()
-        run("/usr/bin/open", ["-t", path])
+        DispatchQueue.global(qos: .userInitiated).async {
+            guard let out = FileHandle(forWritingAtPath: path) else { return }
+            let code = run(brainDir + "/bin/brain", ["show", String(id), "--chars", "1000000"], stdout: out)
+            try? out.close()
+            if code == 0 { run("/usr/bin/open", ["-t", path]) }
+        }
     }
 
     @objc func toggleLogin() {
@@ -317,20 +425,34 @@ final class BrainBar: NSObject, NSApplicationDelegate, NSMenuDelegate {
         refresh()
         menuNeedsUpdate(menu)
         print("значок: [\(state)] \(headline())")
+        print("предупреждение: \(needsAttention)")
+        let s = summary()
+        print("\(s.counts)\n\(s.timing)")
+        if !s.detail.isEmpty { print(s.detail) }
+        if let fraction = s.fraction { print("прогресс: \(Int(fraction * 100))%") }
         for mi in menu.items {
             if mi.isSeparatorItem { print("—"); continue }
-            print(mi.title + (mi.action == nil && !mi.hasSubmenu ? "" : "  ▸"))
+            print(mi.title + (!mi.isEnabled ? " [недоступно]" : "") + (mi.hasSubmenu ? "  ▸" : ""))
             for sub in mi.submenu?.items ?? [] { print("    " + sub.title) }
         }
+        for source in sources { print("    \(source.name): \(source.records) записей, \(source.cards) карточек") }
     }
 }
 
-let app = NSApplication.shared
-let bar = BrainBar()
-if CommandLine.arguments.contains("--dump") {
-    bar.dump()
-    exit(0)
+@main
+struct BrainBarMain {
+    static func main() {
+        let app = NSApplication.shared
+        let bar = BrainBar()
+        if CommandLine.arguments.contains("--dump") {
+            if let i = CommandLine.arguments.firstIndex(of: "--status"), i + 1 < CommandLine.arguments.count {
+                bar.inputPath = CommandLine.arguments[i + 1]
+            }
+            bar.dump()
+            return
+        }
+        app.delegate = bar
+        app.setActivationPolicy(.accessory)
+        withExtendedLifetime(bar) { app.run() } // NSApplication не удерживает delegate.
+    }
 }
-app.delegate = bar
-app.setActivationPolicy(.accessory)
-app.run()

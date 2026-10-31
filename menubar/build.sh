@@ -8,8 +8,13 @@ APP="$HOME/Applications/BrainBar.app"
 rm -rf "$BUILD"
 mkdir -p "$BUILD/Contents/MacOS"
 cp Info.plist "$BUILD/Contents/Info.plist"
-xcrun swiftc -O -swift-version 5 -o "$BUILD/Contents/MacOS/BrainBar" BrainBar.swift
+xcrun swiftc -O -swift-version 5 -parse-as-library -module-cache-path "$PWD/build/module-cache" \
+    -o "$BUILD/Contents/MacOS/BrainBar" BrainBar.swift MenuViews.swift
 codesign --force --sign - "$BUILD"
+if [ "${1:-}" = "--build-only" ]; then
+    echo "собрано: $PWD/$BUILD"
+    exit 0
+fi
 
 running=0
 pgrep -x BrainBar >/dev/null && running=1 && pkill -x BrainBar

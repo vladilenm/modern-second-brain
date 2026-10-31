@@ -6,3 +6,4 @@ __pycache__/
 *.pyc
 menubar/build/
 .claude/worktrees/
+.DS_Store

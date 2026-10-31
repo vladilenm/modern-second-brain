@@ -37,13 +37,13 @@ const byId = new Map(R.map((r) => [r.id, r]));
 const PROJECTS = DATA.projects || {};
 const st = DATA.status || {};
 // Порядок слотов палитры = порядок стопки в графиках (проверен валидатором именно так).
-const SLOT_ORDER = ["claude_code", "codex", "github", "chatgpt", "gmail", "yandex_mail"];
+const SLOT_ORDER = ["claude_code", "codex", "github", "chatgpt", "gmail", "yandex_mail", "kimi"];
 const SRC = DATA.sources_meta
   .map((m, i) => ({ ...m, order: SLOT_ORDER.includes(m.source) ? SLOT_ORDER.indexOf(m.source) : SLOT_ORDER.length + i }))
   .sort((a, b) => a.order - b.order)
   .map((m, i) => ({ ...m, slot: i + 1, count: R.filter((r) => r.source === m.source).length }));
 const SRC_BY = Object.fromEntries(SRC.map((s) => [s.source, s]));
-const colorVar = (source) => `--series-${Math.min(6, SRC_BY[source]?.slot || 6)}`;   // больше шести слотов в палитре нет
+const colorVar = (source) => `--series-${Math.min(7, SRC_BY[source]?.slot || 7)}`;
 const color = (source) => `var(${colorVar(source)}, var(--color-ink-subtle))`;
 const srcName = (source) => SRC_BY[source]?.title || source;
 const projName = (key) => (PROJECTS[key] ? PROJECTS[key].name : "без проекта");

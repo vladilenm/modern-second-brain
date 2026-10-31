@@ -45,6 +45,7 @@ def make_cfg(tmp: Path) -> dict:
     cfg["inbox"] = str(tmp / "inbox")
     cfg["sources"]["claude_code"]["roots"] = [str(tmp / "claude")]
     cfg["sources"]["codex"]["roots"] = [str(tmp / "codex")]
+    cfg["sources"]["kimi"]["roots"] = [str(tmp / "kimi" / "sessions")]
     cfg["llm"]["min_chars"] = 0  # старые тесты пересказа — на коротких текстах
     cfg["sources"]["github"]["enabled"] = False  # в настоящий GitHub тесты не ходят
     return cfg
@@ -220,9 +221,9 @@ class RegistryTests(unittest.TestCase):
     def test_every_connector_is_described(self):
         reg = connectors.registry()
         self.assertEqual([r["source"] for r in reg],
-                         ["claude_code", "codex", "chatgpt", "github", "gmail", "yandex_mail"])
+                         ["claude_code", "codex", "chatgpt", "github", "gmail", "yandex_mail", "kimi"])
         self.assertEqual([r["connector"] for r in reg],
-                         ["claude_code", "codex", "chatgpt_export", "github", "gmail", "yandex_mail"])
+                         ["claude_code", "codex", "chatgpt_export", "github", "gmail", "yandex_mail", "kimi"])
         for r in reg:
             self.assertTrue(r["title"] and r["about"], r)
         types = {r["source"]: r["type"] for r in reg}
@@ -412,7 +413,7 @@ class DashboardTests(unittest.TestCase):
         self.assertEqual(data["state"], "none")
         self.assertFalse(data["records"][0]["card"])
         self.assertEqual([m["source"] for m in data["sources_meta"]], list(connectors.source_names()))
-        self.assertEqual(sorted(data["files_seen"]), ["claude_code", "codex"])
+        self.assertEqual(sorted(data["files_seen"]), ["claude_code", "codex", "kimi"])
         self.assertEqual(data["records"][0]["pkey"], "p")
         self.assertEqual(data["projects"]["p"]["paths"], ["~/p"])
         self.assertIn("edges", data["graph"])

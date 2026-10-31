@@ -1,6 +1,6 @@
 # Второй мозг
 
-Локальная поисковая база прошлой работы: разговоры с ИИ (Claude Code, Codex, ChatGPT), GitHub —
+Локальная поисковая база прошлой работы: разговоры с ИИ (Claude Code, Codex, Kimi Code, ChatGPT), GitHub —
 обсуждения PR и issues, коммиты по месяцам, README — и почта (Gmail и Яндекс): мои переписки и помеченные письма.
 Скрипт забирает новое, чистит от служебного шума, складывает в SQLite и ищет через BM25 с поправкой на свежесть.
 Claude подключён к базе через MCP.
@@ -28,6 +28,7 @@ bin/brain mcp                  # MCP-сервер (его запускает Cla
 brain/connectors/   источники: каждый отвечает «что нового с прошлого раза»
   claude_code.py    ~/.claude/projects/*/*.jsonl (без subagents и служебных сообщений)
   codex.py          ~/.codex/sessions/**/rollout-*.jsonl и сжатые .jsonl.zst (только разговоры с человеком)
+  kimi.py           Kimi Code / CLI и встроенная история Kimi Desktop (только основные разговоры)
   chatgpt_export.py архивы экспорта ChatGPT из папки inbox/
   github.py         GitHub через gh: PR и issues с участием пользователя, коммиты по месяцам, README
   mail.py           почта по IMAP: пароль, пачки, курсор; стратегии gmail.py и yandex_mail.py,
@@ -79,6 +80,33 @@ data/brain.db       сама база (в git не попадает)
 Правка сообщения в Codex заводит ветку — отдельный файл `rollout-…-<тред>_<ветка>.jsonl`, где лежит только
 то, что после правки. Запись собирается по самой новой ветке вместе с началом разговора из прежнего файла;
 брошенные ветки в неё не попадают.
+
+## Kimi Code / Kimi CLI
+
+Источник `kimi` включён по умолчанию. Читает `~/.kimi-code/sessions`, старую папку `~/.kimi/sessions`
+и встроенный Kimi Code в приложении для macOS:
+`~/Library/Application Support/kimi-desktop/daimon-share/daimon/runtime/kimi-code/home/sessions`.
+
+Один разговор — одна запись: вопросы и текст ответов, без рассуждений, вывода инструментов,
+системных вставок, подагентов и служебных сессий генерации заголовков. Журнал `wire.jsonl`
+сохраняет историю до сжатия контекста; для старых сессий без журнала читается `context.jsonl`.
+Проект берётся из `state.json`, индекса сессий или старого `kimi.json`. Действуют общие
+`exclude_projects` и ожидание 30 минут тишины.
+
+```bash
+bin/brain sync --source kimi --no-summarize
+bin/brain search "запрос" --source kimi
+```
+
+Если история перенесена через `KIMI_CODE_HOME` / `KIMI_SHARE_DIR`, задай фактическую папку
+`sessions` в `config.json` (список заменяет стандартные пути):
+
+```json
+"sources": {"kimi": {"enabled": true, "roots": ["~/my-kimi/sessions"], "idle_minutes": 30}}
+```
+
+Форматы хранения: [Kimi Code](https://moonshotai.github.io/kimi-code/en/configuration/data-locations.html),
+[старый Kimi CLI](https://moonshotai.github.io/kimi-cli/en/configuration/data-locations.html).
 
 ## ChatGPT
 

@@ -37,6 +37,15 @@ DEFAULTS = {
     "sources": {
         "claude_code": {"enabled": True, "roots": ["~/.claude/projects"], "idle_minutes": 30},
         "codex": {"enabled": True, "roots": ["~/.codex/sessions", "~/.codex/archived_sessions"], "idle_minutes": 30},
+        "kimi": {
+            "enabled": True,
+            "roots": [
+                "~/.kimi-code/sessions",
+                "~/.kimi/sessions",
+                "~/Library/Application Support/kimi-desktop/daimon-share/daimon/runtime/kimi-code/home/sessions",
+            ],
+            "idle_minutes": 30,
+        },
         "chatgpt_export": {"enabled": True, "idle_minutes": 1},
         "github": {
             "enabled": True,

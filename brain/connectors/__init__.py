@@ -11,10 +11,11 @@ from .claude_code import ClaudeCodeConnector
 from .codex import CodexConnector
 from .github import GitHubConnector
 from .gmail import GmailConnector
+from .kimi import KimiConnector
 from .yandex_mail import YandexMailConnector
 
 ALL = {c.name: c for c in (ClaudeCodeConnector, CodexConnector, ChatGPTExportConnector, GitHubConnector,
-                           GmailConnector, YandexMailConnector)}
+                           GmailConnector, YandexMailConnector, KimiConnector)}
 
 
 def enabled(cfg: dict, only: str = None) -> List[Connector]:

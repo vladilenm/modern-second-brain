@@ -79,6 +79,15 @@ DEFAULTS = {
             "keychain_service": "brain-mail",
             "password_command": None,
         },
+        "notion": {
+            "enabled": False,
+            "every_minutes": 15,
+            "summarize": True,
+            "api_base": "https://api.notion.com/v1",
+            "keychain_service": "brain-notion",
+            "keychain_account": "default",
+            "max_pages_per_run": 100,
+        },
     },
 }
 

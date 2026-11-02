@@ -33,6 +33,7 @@ RULES = [
     (re.compile(r"\b(?:sk|sc|pk|rk)[-_][A-Za-z0-9_-]{20,}"), MASK),  # sk-…, sk-ant-…, sc_…, pk_live_…
     (re.compile(r"\bgh[pousr]_[A-Za-z0-9]{30,}"), MASK),
     (re.compile(r"\bgithub_pat_[A-Za-z0-9_]{30,}"), MASK),
+    (re.compile(r"\b(?:ntn_|secret_)[A-Za-z0-9_-]{20,}"), MASK),  # Notion
     (re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}"), MASK),
     (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), MASK),
     (re.compile(r"\bAIza[0-9A-Za-z_-]{35}"), MASK),

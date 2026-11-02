@@ -334,7 +334,8 @@ class NotionConnector(ApiConnector):
         while remaining:
             oid = remaining.pop()
             if oid in seen:
-                raise RuntimeError("Notion: API повторно вернул непрочитанное поддерево страницы")
+                complete = False
+                continue  # циклический экспорт не должен останавливать остальные страницы
             seen.add(oid)
             try:
                 result = api.request("GET", f"/pages/{oid}/markdown?markdown_version=v2")
@@ -346,9 +347,24 @@ class NotionConnector(ApiConnector):
                 continue
             if not isinstance(result.get("markdown"), str):
                 raise RuntimeError("Notion: API не вернул Markdown страницы")
-            parts.append(result["markdown"])
-            unknown = result.get("unknown_block_ids") or []
+            text = result["markdown"]
+            unknown = [object_id(bid) for bid in result.get("unknown_block_ids") or []]
             if result.get("truncated") and not unknown:
                 raise RuntimeError("Notion: неполная страница без списка непрочитанных блоков")
-            remaining.extend(object_id(bid) for bid in reversed(unknown))
+            if oid in unknown:
+                # link_to_page возвращается как unknown со своим же ID даже при полном доступе.
+                # Структурированный API умеет читать эту ссылку, Markdown API — нет.
+                try:
+                    block = api.request("GET", f"/blocks/{oid}")
+                except Inaccessible:
+                    block = {}
+                link = block.get("link_to_page") or {}
+                target = link.get(link.get("type"))
+                if block.get("type") == "link_to_page" and target:
+                    text = "Ссылка на страницу: https://www.notion.so/" + object_id(target)
+                else:
+                    complete = False
+                unknown = [bid for bid in unknown if bid != oid]
+            parts.append(text)
+            remaining.extend(reversed(unknown))
         return "\n\n".join(parts), complete

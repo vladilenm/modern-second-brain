@@ -191,6 +191,24 @@ class NotionTests(unittest.TestCase):
         self.assertEqual(self.run_sync()["errors"], 0)
         self.assertIn("Продолжение заметки", self.conn.execute("SELECT body FROM records").fetchone()[0])
 
+    def test_link_to_page_self_reference_uses_block_api(self):
+        self.routes["GET", "/v1/pages/" + P1 + "/markdown"] = {
+            "markdown": "Начало", "truncated": True, "unknown_block_ids": [B1]}
+        self.routes["GET", "/v1/pages/" + B1 + "/markdown"] = {
+            "markdown": "<unknown/>", "truncated": True, "unknown_block_ids": [B1]}
+        self.routes["GET", "/v1/blocks/" + B1] = {
+            "type": "link_to_page", "link_to_page": {"type": "page_id", "page_id": P2}}
+        self.assertEqual(self.run_sync()["errors"], 0)
+        self.assertIn("https://www.notion.so/" + P2, self.conn.execute("SELECT body FROM records").fetchone()[0])
+        self.assertIn(P1, json.loads(db.get_cursor(self.conn, "notion"))["pages"])
+
+    def test_unexportable_self_reference_stays_partial_without_stopping_sync(self):
+        self.routes["GET", "/v1/pages/" + P1 + "/markdown"] = {
+            "markdown": "<unknown/>", "truncated": True, "unknown_block_ids": [P1]}
+        self.routes["GET", "/v1/blocks/" + P1] = {"type": "unsupported"}
+        self.assertEqual(self.run_sync()["errors"], 0)
+        self.assertIn(P1, json.loads(db.get_cursor(self.conn, "notion"))["partial_pages"])
+
     def test_page_budget_preserves_children_missing_from_search(self):
         self.cfg["sources"]["notion"]["max_pages_per_run"] = 1
         self.install_page(page(P2), "Вложенная страница, которой нет в поиске.")

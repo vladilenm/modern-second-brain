@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import copy
+from datetime import datetime, timedelta, timezone
 import http.server
 import json
 import os
@@ -20,6 +21,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
+NOW = datetime(2026, 11, 11, 12, 0, tzinfo=timezone.utc)
 
 from brain import config, db, status, summarize  # noqa: E402
 from brain import connectors  # noqa: E402
@@ -49,6 +51,29 @@ def make_cfg(tmp: Path) -> dict:
     cfg["llm"]["min_chars"] = 0  # старые тесты пересказа — на коротких текстах
     cfg["sources"]["github"]["enabled"] = False  # в настоящий GitHub тесты не ходят
     return cfg
+
+
+def seed(conn, source, ext, title, updated, project=None, started=None, atoms=None, summary=None) -> int:
+    """Запись с готовой карточкой: атомы и пересказ кладутся напрямую, без модели."""
+    db.upsert(conn, Record(source, ext, title, "текст записи " + title, updated, started_at=started, project=project))
+    rid = conn.execute("SELECT id FROM records WHERE source = ? AND external_id = ?", (source, ext)).fetchone()[0]
+    conn.execute("UPDATE records SET atoms = ?, summary = ? WHERE id = ?", ("\n".join(atoms or []) or None, summary, rid))
+    return rid
+
+
+def seed_context(conn) -> None:
+    """Шесть записей: проект из папки и репозитория, второй проект, запись без проекта, старая запись."""
+    seed(conn, "claude_code", "r1", "Лендинг клуба", "2026-11-11T10:00:00Z", project="~/p/club-landing",
+         started="2026-11-11T09:00:00Z", summary="Обсудили лендинг",
+         atoms=[f"[decision] Решение {k}" for k in range(1, 7)] + ["[error] Сборка падала", "[command] npm run build"])
+    seed(conn, "codex", "r2", "Шрифты лендинга", "2026-11-10T10:00:00Z", project="~/p/club-landing",
+         started="2026-10-01T10:00:00Z", atoms=["[todo] Проверить шрифт"])
+    seed(conn, "github", "r3", "PR без знаний", "2026-11-09T10:00:00Z", project="vladilenm/club_landing")
+    seed(conn, "codex", "r4", "Вебхук бота", "2026-11-11T08:00:00Z", project="~/dev/club-bot",
+         atoms=["[fix] Починили вебхук"])
+    seed(conn, "notion", "r5", "Заметка о цене", "2026-11-11T11:00:00Z", atoms=["[decision] Цена обсуждается позже"])
+    seed(conn, "codex", "r6", "Старый бот", "2026-10-01T10:00:00Z", project="~/dev/club-bot",
+         atoms=["[decision] Старое решение"])
 
 
 def claude_session():
@@ -1027,6 +1052,44 @@ class SummarizeTests(unittest.TestCase):
             self.assertIn(spec["what"], prompt)
             self.assertIn('"title"', prompt)
         self.assertEqual(summarize.system_prompt("неизвестный"), summarize.system_prompt("dialog"))
+
+
+class ProjectsTests(unittest.TestCase):
+    def setUp(self):
+        from brain import projects
+        self.projects = projects
+        self.conn = db.connect(":memory:")
+        seed_context(self.conn)
+
+    def test_listing_merges_folder_and_repo(self):
+        items = self.projects.listing(self.conn)
+        self.assertEqual([(p["key"], p["count"], p["latest"]) for p in items],
+                         [("", 1, "2026-11-11T11:00:00Z"), ("club-landing", 3, "2026-11-11T10:00:00Z"),
+                          ("club-bot", 2, "2026-11-11T08:00:00Z")])
+        landing = items[1]
+        self.assertEqual(landing["name"], "club-landing")
+        self.assertEqual(landing["paths"], ["vladilenm/club_landing", "~/p/club-landing"])
+
+    def test_find_by_key_path_and_substring(self):
+        for name in ("club-landing", "club_landing", "Club Landing", "~/p/club-landing", "vladilenm/club_landing", "landing"):
+            self.assertEqual(self.projects.find(self.conn, name)["key"], "club-landing", name)
+        self.assertEqual(self.projects.find(self.conn, "bot")["key"], "club-bot")
+
+    def test_find_reports_candidates_and_misses(self):
+        with self.assertRaises(self.projects.ProjectError) as several:
+            self.projects.find(self.conn, "club")
+        self.assertIn("несколько", str(several.exception))
+        self.assertIn("club-landing", str(several.exception))
+        self.assertIn("club-bot", str(several.exception))
+        with self.assertRaises(self.projects.ProjectError) as missing:
+            self.projects.find(self.conn, "нет такого")
+        self.assertIn("не найден", str(missing.exception))
+        with self.assertRaises(self.projects.ProjectError):
+            self.projects.find(self.conn, "  ")
+
+    def test_dashboard_uses_the_same_key(self):
+        from brain import dashboard
+        self.assertIs(dashboard.project_key, self.projects.project_key)
 
 
 class MCPTests(unittest.TestCase):

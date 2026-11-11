@@ -11,9 +11,10 @@ import re
 import sqlite3
 from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Tuple
 
 from . import connectors, status as status_mod, topics
+from .projects import project_key
 from .timeutil import now_iso
 
 WEB = Path(__file__).with_name("web")
@@ -43,17 +44,6 @@ def _files_seen(conn: sqlite3.Connection, cfg: dict) -> dict:
             prefixes = tuple(d.rstrip("/") + "/" for d in cls(cfg).roots())
             out[cls.source] = sum(1 for p in paths if prefixes and p.startswith(prefixes))
     return out
-
-
-def project_key(project: Optional[str]) -> Tuple[str, str]:
-    """Ключ и имя проекта. Папка ~/…/club-landing и репозиторий vladilenm/club_landing — один проект."""
-    p = (project or "").rstrip("/")
-    if "/scratch-workspaces/" in p:
-        return "scratch", "Черновики"
-    if not p:
-        return "", "без проекта"
-    name = p.split("/")[-1] or p
-    return re.sub(r"[\s_]+", "-", name.lower()), name
 
 
 def _name_parts(key: str, group: list) -> set:

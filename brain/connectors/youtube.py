@@ -28,6 +28,8 @@ PAGE = 50                  # столько идентификаторов ви�
 MAX_COMMENT_CHARS = 1000
 MAX_DESCRIPTION_CHARS = 4000
 CHANNEL_ID = re.compile(r"^UC[\w-]{22}$")
+# Ответ зрителя начинается с «@ник того, кому отвечают»: ники в базу не берём.
+MENTION = re.compile(r"^@[A-Za-z0-9._-]+\s*")
 DURATION = re.compile(r"^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$")
 # (возраст видео до, как часто обновлять запись)
 SCHEDULE = ((timedelta(days=7), timedelta(days=1)), (timedelta(days=90), timedelta(days=7)))
@@ -73,6 +75,20 @@ def rounded(value) -> str:
     else:
         text = f"{n2 / 1_000_000:g} млн".replace(".", ",", 1)
     return "около " + text  # всегда с «около»: иначе 12 000 и 12 001 давали бы разный текст
+
+
+def counted(value, forms: Tuple[str, str, str]) -> str:
+    """Число со словом в нужной форме: «1 лайк», «63 лайка», «около 4,3 тыс. просмотров»."""
+    text = rounded(value)
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return f"{text} {forms[2]}"
+    if n >= 100:
+        return f"{text} {forms[2]}"
+    a, b = n % 100, n % 10
+    form = forms[2] if 10 < a < 20 else forms[1] if 1 < b < 5 else forms[0] if b == 1 else forms[2]
+    return f"{text} {form}"
 
 
 def duration_text(iso: Optional[str]) -> str:
@@ -173,7 +189,8 @@ class YouTubeAPI:
 
 
 def _comment_line(snippet: dict, owner: str, reply: bool) -> str:
-    text = clip(" ".join((snippet.get("textDisplay") or snippet.get("textOriginal") or "").split()), MAX_COMMENT_CHARS)
+    text = " ".join((snippet.get("textDisplay") or snippet.get("textOriginal") or "").split())
+    text = clip(MENTION.sub("", text) if reply else text, MAX_COMMENT_CHARS)
     if not text:
         return ""
     mine = ((snippet.get("authorChannelId") or {}).get("value") == owner)
@@ -188,11 +205,9 @@ def build_record(video: dict, channel: dict, threads: Optional[List[dict]]) -> R
     sn, st = video.get("snippet") or {}, video.get("statistics") or {}
     published = to_iso(sn.get("publishedAt")) or "1970-01-01T00:00:00Z"
     length = duration_text((video.get("contentDetails") or {}).get("duration"))
-    stats = [f"{rounded(st.get('viewCount'))} просмотров"] if st.get("viewCount") is not None else []
-    if st.get("likeCount") is not None:
-        stats.append(f"{rounded(st['likeCount'])} лайков")
-    if st.get("commentCount") is not None:
-        stats.append(f"{rounded(st['commentCount'])} комментариев")
+    stats = [counted(st[key], forms) for key, forms in (
+        ("viewCount", ("просмотр", "просмотра", "просмотров")), ("likeCount", ("лайк", "лайка", "лайков")),
+        ("commentCount", ("комментарий", "комментария", "комментариев"))) if st.get(key) is not None]
     parts = [f"Канал: {channel['title']}",
              "Опубликовано: " + " · ".join(x for x in (published[:10], length) if x)]
     if stats:

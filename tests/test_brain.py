@@ -1347,7 +1347,7 @@ class YouTubeTests(unittest.TestCase):
         FakeYouTube.hits = []
         self.videos = {"new": yt_video("new", "2026-11-10T09:00:00Z"), "mid": yt_video("mid", "2026-10-01T09:00:00Z"),
                        "old": yt_video("old", "2025-01-01T09:00:00Z")}
-        self.threads = {"new": [yt_thread("Как подключить MCP?", 41, replies=[("Смотри описание", self.OWNER), ("Спасибо!", "v2")]),
+        self.threads = {"new": [yt_thread("Как подключить MCP?", 41, replies=[("Смотри описание", self.OWNER), ("@some.viewer-1 Спасибо!", "v2")]),
                                 yt_thread("Отличный разбор")]}
         self.disabled, self.quota_on = {"old"}, set()
         FakeYouTube.answer = self.route
@@ -1404,6 +1404,10 @@ class YouTubeTests(unittest.TestCase):
                                    "  ↳ Спасибо!\n"
                                    "— Отличный разбор")
         self.assertTrue(by_id["old"].body.endswith("Комментарии под видео отключены."))
+        from brain.connectors.youtube import counted
+        likes = ("лайк", "лайка", "лайков")
+        self.assertEqual([counted(n, likes) for n in (1, 3, 11, 63, 4321)],
+                         ["1 лайк", "3 лайка", "11 лайков", "63 лайка", "около 4,3 тыс. лайков"])
         self.assertNotIn("Комментарии", by_id["mid"].body)
         self.assertNotIn("viewer", new.body)  # имён зрителей в записи нет
         self.assertTrue(all(key == "test-key" for _, _, key in FakeYouTube.hits))

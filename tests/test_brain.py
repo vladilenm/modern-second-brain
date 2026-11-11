@@ -1092,6 +1092,113 @@ class ProjectsTests(unittest.TestCase):
         self.assertIs(dashboard.project_key, self.projects.project_key)
 
 
+class RecentTests(unittest.TestCase):
+    def setUp(self):
+        from brain import context
+        self.context = context
+        self.conn = db.connect(":memory:")
+        seed_context(self.conn)
+
+    def test_groups_by_project_with_main_knowledge_first(self):
+        text = self.context.recent(self.conn, days=3, now=NOW)
+        self.assertTrue(text.startswith("Что нового за 3 дня: 5 записей, 2 проекта\n\n"), text)
+        self.assertLess(text.index("## club-landing"), text.index("## club-bot"))
+        self.assertLess(text.index("## club-bot"), text.index("## Без проекта"))
+        self.assertIn("## club-landing — 3 записи · 6 решений · 1 задача · 1 ошибка\n- решение: Решение 1 [id 1]", text)
+        self.assertEqual(text.count("- решение: Решение "), 5)
+        self.assertIn("…ещё 3 знания, команды и факты: 1", text)
+        self.assertIn("Без знаний: «PR без знаний» [id 3]", text)
+        self.assertIn("## club-bot — 1 запись · 1 исправление\n- исправление: Починили вебхук [id 4]", text)
+        self.assertIn("## Без проекта — 1 запись · 1 решение\n- решение: Цена обсуждается позже [id 5]", text)
+        self.assertNotIn("Старое решение", text)
+
+    def test_project_filter_gives_everything(self):
+        text = self.context.recent(self.conn, days=3, project="club_landing", now=NOW)
+        self.assertTrue(text.startswith("Что нового за 3 дня в проекте club-landing: 3 записи\n\n"), text)
+        self.assertEqual(text.count("- решение: Решение "), 6)
+        self.assertIn("- задача: Проверить шрифт [id 2, продолжение]", text)
+        self.assertIn("- команда: npm run build [id 1]", text)
+        self.assertNotIn("club-bot", text)
+        self.assertNotIn("…ещё", text)
+
+    def test_source_filter(self):
+        text = self.context.recent(self.conn, days=3, source="codex", now=NOW)
+        self.assertIn("Проверить шрифт", text)
+        self.assertIn("Починили вебхук", text)
+        self.assertNotIn("Цена обсуждается", text)
+        self.assertNotIn("Решение 1", text)
+
+    def test_empty_period_and_bad_days(self):
+        later = NOW + timedelta(days=40)
+        self.assertEqual(self.context.recent(self.conn, days=1, now=later),
+                         "За 1 день записей не было. Последняя запись в базе — 2026-11-11.")
+        for bad in (0, 31, "много"):
+            with self.assertRaises(ValueError):
+                self.context.recent(self.conn, days=bad, now=NOW)
+        from brain import projects
+        with self.assertRaises(projects.ProjectError):
+            self.context.recent(self.conn, days=3, project="нет такого", now=NOW)
+
+    def test_shows_ten_projects_and_counts_the_rest(self):
+        conn = db.connect(":memory:")
+        for i in range(12):
+            seed(conn, "codex", f"p{i}", f"Запись {i}", "2026-11-11T10:00:00Z", project=f"~/p/proj-{i:02d}",
+                 atoms=["[decision] Решение"] * (12 - i))
+        seed(conn, "notion", "n", "Без проекта", "2026-11-11T10:00:00Z", atoms=["[fact] Факт"])
+        text = self.context.recent(conn, days=3, now=NOW)
+        self.assertEqual(text.count("\n## proj-"), 10)
+        self.assertIn("## Без проекта", text)
+        self.assertTrue(text.endswith("…ещё 2 проекта: proj-10 (1 запись), proj-11 (1 запись). Сузь параметром project."), text)
+
+
+class ProjectCardTests(unittest.TestCase):
+    def setUp(self):
+        from brain import context
+        self.context = context
+        self.conn = db.connect(":memory:")
+        seed_context(self.conn)
+
+    def test_list_without_name(self):
+        text = self.context.project(self.conn)
+        self.assertEqual(text, "Проектов: 2, записей без проекта: 1\n\n"
+                               "club-landing — 3 записи, последняя 2026-11-11\n"
+                               "club-bot — 2 записи, последняя 2026-11-11")
+
+    def test_list_is_capped(self):
+        conn = db.connect(":memory:")
+        for i in range(53):
+            seed(conn, "codex", f"p{i}", "Запись", f"2026-11-{i % 9 + 1:02d}T10:00:00Z", project=f"~/p/proj-{i:02d}")
+        text = self.context.project(conn)
+        self.assertTrue(text.startswith("Проектов: 53, записей без проекта: 0\n\n"))
+        self.assertEqual(text.count(" — 1 запись, последняя "), 50)
+        self.assertTrue(text.endswith("\n…ещё 3 проекта"))
+
+    def test_card(self):
+        text = self.context.project(self.conn, "club_landing")
+        self.assertTrue(text.startswith(
+            "Проект club-landing\n"
+            "Пути: vladilenm/club_landing; ~/p/club-landing\n"
+            "Записей: 3 (Claude Code 1, Codex 1, GitHub 1) · 2026-10-01 — 2026-11-11\n\n"
+            "Последние записи:\n"
+            "[id 1] Лендинг клуба · Claude Code · 2026-11-11\n"
+            "  Обсудили лендинг\n"
+            "[id 2] Шрифты лендинга · Codex · 2026-11-10\n"
+            "[id 3] PR без знаний · GitHub · 2026-11-09\n\n"
+            "Последние решения:\n"
+            "- Решение 1 [id 1, 2026-11-11]\n"), text)
+        self.assertEqual(text.count("- Решение "), 6)
+        self.assertTrue(text.endswith("Последние задачи (статус выполнения в базе не хранится):\n"
+                                      "- Проверить шрифт [id 2, 2026-11-10]"), text)
+
+    def test_card_skips_empty_sections_and_reports_unknown(self):
+        text = self.context.project(self.conn, "club-bot")
+        self.assertIn("Последние решения:\n- Старое решение [id 6, 2026-10-01]", text)
+        self.assertNotIn("Последние задачи", text)
+        from brain import projects
+        with self.assertRaises(projects.ProjectError):
+            self.context.project(self.conn, "нет такого")
+
+
 class MCPTests(unittest.TestCase):
     def test_stdio_roundtrip(self):
         tmp = Path(tempfile.mkdtemp())

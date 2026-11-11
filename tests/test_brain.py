@@ -1199,6 +1199,33 @@ class ProjectCardTests(unittest.TestCase):
             self.context.project(self.conn, "нет такого")
 
 
+class SearchFilterTests(unittest.TestCase):
+    def setUp(self):
+        self.conn = db.connect(":memory:")
+        seed(self.conn, "codex", "s1", "Вебхук лендинга", "2026-11-10T10:00:00Z", project="~/p/club-landing")
+        seed(self.conn, "codex", "s2", "Вебхук бота", "2026-11-11T10:00:00Z", project="~/dev/club-bot")
+        seed(self.conn, "codex", "s3", "Вебхук старый", "2026-06-01T10:00:00Z", project="~/dev/club-bot")
+        seed(self.conn, "notion", "s4", "Вебхук в заметке", "2026-11-11T09:00:00Z")
+
+    def ids(self, **kw):
+        return sorted(r["id"] for r in search_mod.search(self.conn, "вебхук", **kw))
+
+    def test_filters_narrow_before_ranking(self):
+        self.assertEqual(self.ids(), [1, 2, 3, 4])
+        self.assertEqual(self.ids(project_paths=["~/dev/club-bot"]), [2, 3])
+        self.assertEqual(self.ids(days=30, now=NOW), [1, 2, 4])
+        self.assertEqual(self.ids(project_paths=["~/dev/club-bot"], days=30, now=NOW), [2])
+        self.assertEqual(self.ids(project_paths=[]), [])
+        self.assertEqual(self.ids(source="notion", days=30, now=NOW), [4])
+
+    def test_filters_do_not_change_ranking(self):
+        base = search_mod.search(self.conn, "вебхук")
+        wide = search_mod.search(self.conn, "вебхук", days=100000,
+                                 project_paths=["~/p/club-landing", "~/dev/club-bot"])
+        # Оценка нормируется на лучший результат выдачи, поэтому сравниваем порядок, а не числа.
+        self.assertEqual([r["id"] for r in wide], [r["id"] for r in base if r["project"]])
+
+
 class MCPTests(unittest.TestCase):
     def test_stdio_roundtrip(self):
         tmp = Path(tempfile.mkdtemp())

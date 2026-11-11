@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 
 from .timeutil import age_days
@@ -40,6 +41,9 @@ def search(
     source: Optional[str] = None,
     half_life_days: float = 120,
     recency_weight: float = 0.35,
+    project_paths: Optional[List[str]] = None,
+    days: Optional[int] = None,
+    now: Optional[datetime] = None,
 ) -> List[dict]:
     terms = query_terms(query)
     if not terms:
@@ -50,16 +54,30 @@ def search(
         terms = terms + [" ".join(words)]
     match = " OR ".join('"' + t.replace('"', '""') + '"' for t in terms)
     weights = ", ".join(str(w) for w in WEIGHTS)
+    # Отбор до ранжирования: источник, проект и давность только сужают набор, оценка считается как раньше.
+    where, params = ["records_fts MATCH ?"], [match]
+    if source:
+        where.append("r.source = ?")
+        params.append(source)
+    if project_paths is not None:
+        if not project_paths:
+            return []
+        where.append("r.project IN (" + ", ".join("?" * len(project_paths)) + ")")
+        params.extend(project_paths)
+    if days is not None:
+        since = (now or datetime.now(timezone.utc)) - timedelta(days=days)
+        where.append("r.updated_at > ?")
+        params.append(since.strftime("%Y-%m-%dT%H:%M:%SZ"))
     sql = f"""
         SELECT r.id, r.source, r.title, r.ai_title, r.summary, r.project, r.location,
                r.updated_at, bm25(records_fts, {weights}) AS score,
                snippet(records_fts, -1, '', '', '…', 64) AS snippet
         FROM records_fts JOIN records r ON r.id = records_fts.rowid
-        WHERE records_fts MATCH ? {"AND r.source = ?" if source else ""}
+        WHERE {" AND ".join(where)}
         ORDER BY score
         LIMIT ?
     """
-    params = [match] + ([source] if source else []) + [max(limit * 10, 100)]
+    params.append(max(limit * 10, 100))
     rows = conn.execute(sql, params).fetchall()
     if not rows:
         return []

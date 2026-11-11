@@ -14,7 +14,8 @@ out = Path(sys.argv[1])
 out.mkdir(parents=True, exist_ok=True)
 cfg = make_cfg(out)
 conn = db.connect(":memory:")
-now = datetime.now(timezone.utc)
+# Без долей секунды: время сборки панели (generated_at) тоже округлено, и запись «только что» не должна его обгонять.
+now = datetime.now(timezone.utc).replace(microsecond=0)
 for i in range(1, 49):
     updated = now - timedelta(days=120 if i > 36 else i % 20)
     db.upsert(conn, Record(

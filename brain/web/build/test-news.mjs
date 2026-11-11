@@ -75,8 +75,41 @@ try {
   const phone = await open(await context({ width: 390, height: 800 }));
   assert.equal(await phone.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'нет горизонтальной прокрутки');
 
+  // Отметка просмотра: пишется время сборки панели, блок пустеет, выбор переживает перезагрузку.
+  const mark = await open(await context());
+  assert.equal(await mark.locator('#news-seen').isVisible(), true);
+  await mark.locator('#news-seen').click();
+  const built = await mark.evaluate(() => DATA.generated_at);
+  assert.deepEqual(await mark.evaluate(() => JSON.parse(localStorage.getItem('brain.news'))), { seen: built, range: 'seen' });
+  assert.equal(await pressed(mark), 'С прошлого просмотра');
+  assert.match(await mark.locator('#news').innerText(), /С прошлого просмотра ничего не изменилось/);
+  assert.equal(await mark.locator('#news-seen').isHidden(), true, 'повторно отмечать нечего');
+  await mark.reload();
+  await mark.locator('#news').waitFor();
+  assert.equal(await pressed(mark), 'С прошлого просмотра');
+  assert.match(await mark.locator('#news').innerText(), /ничего не изменилось/);
+  await mark.locator('#news-range [data-v="7d"]').click();
+  assert.equal((await titles(mark)).length, 4);
+  await mark.reload();
+  await mark.locator('#news').waitFor();
+  assert.equal(await pressed(mark), '7 дней', 'период запоминается');
+
+  // Отметка полуторасуточной давности: видны только записи новее неё.
+  await mark.evaluate(() => localStorage.setItem('brain.news', JSON.stringify({ seen: new Date(Date.now() - 36 * 3600e3).toISOString(), range: 'seen' })));
+  await mark.reload();
+  await mark.locator('#news').waitFor();
+  assert.deepEqual(await titles(mark), ['Проект-1', 'Проект-3', 'Без проекта']);
+  assert.match(await mark.locator('#news-sub').innerText(), /^3 записи, 2 проекта · с \d+ [а-я]+, \d\d:\d\d$/);
+  assert.equal(await mark.locator('#news-seen').isVisible(), true);
+
+  // Хранилище недоступно: кнопки и варианта «С прошлого просмотра» нет, блок работает.
+  const locked = await open(await context(), 'news.html', () => { Storage.prototype.setItem = () => { throw new Error('denied'); }; });
+  assert.equal(await locked.locator('#news-seen').isHidden(), true);
+  assert.equal(await locked.locator('#news-range [data-v="seen"]').isHidden(), true);
+  assert.equal((await titles(locked)).length, 4);
+
   assert.deepEqual(failures, [], 'нет ошибок в браузере');
-  console.log('PASS: что нового — периоды, группы, раскрытие, запись по клику, пустая база, узкий экран');
+  console.log('PASS: что нового — периоды, группы, раскрытие, запись по клику, пустая база, узкий экран, отметка просмотра, хранилище');
 } finally {
   await browser.close();
   await rm(out, { recursive: true, force: true });

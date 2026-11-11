@@ -493,6 +493,30 @@ const NEWS_TOP = 5, NEWS_BARE = 3;
 const NEWS_RANGES = [["seen", "С прошлого просмотра"], ["today", "Сегодня"], ["7d", "7 дней"]];
 // seen — отметка «всё просмотрено» (время сборки панели); store — доступно ли хранилище; open — раскрытые списки.
 const news = { range: "7d", seen: null, store: false, open: new Set() };
+const NEWS_KEY = "brain.news";
+try {
+  // getItem в приватном режиме может молча вернуть null, а запись — упасть: проверяем именно запись.
+  localStorage.setItem(NEWS_KEY + ".probe", "1");
+  localStorage.removeItem(NEWS_KEY + ".probe");
+  news.store = true;
+  const saved = JSON.parse(localStorage.getItem(NEWS_KEY)) || {};
+  if (typeof saved.seen === "string" && !isNaN(Date.parse(saved.seen))) news.seen = saved.seen;
+  if (NEWS_RANGES.some(([v]) => v === saved.range) && (saved.range !== "seen" || news.seen)) news.range = saved.range;
+} catch { /* без хранилища отметку не ведём */ }
+const saveNews = () => { try { localStorage.setItem(NEWS_KEY, JSON.stringify({ seen: news.seen, range: news.range })); } catch { /* не запомним */ } };
+function syncNewsTools() {
+  $('#news-range [data-v="seen"]').hidden = !news.seen;
+  $("#news-range").querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", b.dataset.v === news.range));
+  $("#news-seen").hidden = !news.store || news.seen === DATA.generated_at;
+}
+// В отметку идёт время сборки панели, а не клика: записи, попавшие в базу между ними, не теряются.
+function markSeen() {
+  news.seen = DATA.generated_at;
+  news.range = "seen";
+  news.open.clear();
+  saveNews();
+  drawNews();
+}
 function newsStart() {
   if (news.range === "seen" && news.seen) return new Date(news.seen).getTime();
   if (news.range === "today") { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); }
@@ -565,6 +589,7 @@ function newsGroup(g) {
   </section>`;
 }
 function drawNews() {
+  syncNewsTools();
   const m = newsModel(), projects = m.groups.filter((g) => g.key).length;
   const counts = m.count ? [words(m.count, RECORD_FORMS), projects && words(projects, PROJECT_FORMS)].filter(Boolean).join(", ") : "";
   $("#news-sub").textContent = [counts, newsPeriod()].filter(Boolean).join(" · ");
@@ -578,8 +603,8 @@ function drawNews() {
   $("#news").innerHTML = m.groups.map(newsGroup).join("");
 }
 function initNews() {
-  seg($("#news-range"), NEWS_RANGES, news.range, (v) => { news.range = v; news.open.clear(); drawNews(); });
-  $('#news-range [data-v="seen"]').hidden = !news.seen;
+  seg($("#news-range"), NEWS_RANGES, news.range, (v) => { news.range = v; news.open.clear(); saveNews(); drawNews(); });
+  $("#news-seen").addEventListener("click", markSeen);
   $("#news").addEventListener("click", (e) => {
     const b = e.target.closest("[data-nmore]");
     if (!b) return;

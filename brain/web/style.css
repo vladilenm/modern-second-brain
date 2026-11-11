@@ -265,6 +265,7 @@ button.link { padding: 0; border: 0; background: none; color: var(--color-accent
 .nlist .cont { flex: none; margin-top: 3px; font: 400 12px var(--font-mono); color: var(--color-ink-subtle); }
 .nmore { padding: 0; margin-top: var(--space-2); border: 0; background: none; cursor: pointer; font: 400 14px var(--font-body); color: var(--color-accent-text); }
 .nmore:hover { text-decoration: underline; }
+.quiet-note { font-size: 13px; color: var(--color-ink-subtle); white-space: nowrap; }
 .ngroup > .nmore + .nmore { margin-left: var(--space-4); }
 .nbare { margin: var(--space-2) 0 0; font-size: 14px; line-height: 1.6; color: var(--color-ink-muted); }
 .nbare button { display: inline; padding: 0; margin: 0; border: 0; background: none; cursor: pointer; font: inherit; color: var(--color-ink); text-align: left; }

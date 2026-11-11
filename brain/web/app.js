@@ -460,6 +460,8 @@ function baseLine() {
   if (DATA.state === "interrupted") bad.push("Последний прогон прервался.");
   if (syncErrors.length) bad.push(`Ошибки синхронизации: ${syncErrors.map(([src]) => esc(srcName(src))).join(", ")}.`);
   if (failed) bad.push(`${words(failed, RECORD_FORMS)} не удалось пересказать.`);
+  const quiet = Object.values(DATA.silence || {}).filter((s) => s.quiet);
+  if (quiet.length) bad.push(`Подозрительно тихо: ${quiet.map((s) => `${esc(srcName(s.source))} (${n(s.silent_days)} дн., обычно до ${n(s.usual_days)})`).join(", ")}.`);
   const alert = $("#base-alert");
   alert.hidden = !bad.length;
   alert.innerHTML = bad.length ? `${bad.join(" ")} <a href="#records">Подробности</a>` : "";
@@ -1401,9 +1403,14 @@ function health() {
     const status = !sync ? `<span class="tag">не запускалась</span>`
       : sync.last_error ? `<span class="tag err">ошибка</span> <span class="msg">${esc(sync.last_error)}</span>`
       : `<span class="tag ok">ок</span> <span>${esc(ago(date(sync.last_success_at)))}</span>`;
+    // Синхронизация без ошибок ещё не значит, что источник что-то приносит: показываем, сколько он молчит.
+    const sil = (DATA.silence || {})[s.source];
+    const silence = !sil || sil.silent_days < 1 ? ""
+      : sil.quiet ? ` <span class="tag wait" title="Обычная пауза — до ${n(sil.usual_days)} дн.">тихо ${n(sil.silent_days)} дн.</span>`
+      : ` <span class="quiet-note">записей нет ${n(sil.silent_days)} дн.${sil.usual_days ? `, обычно до ${n(sil.usual_days)}` : ""}</span>`;
     const name = `<span class="src"><span class="dot" style="background:${color(s.source)}"></span>${esc(s.title)}</span>`;
     if (s.hint && !rs.length) return `<div class="hrow">${name}<span class="st">${status}</span><span class="hint">${esc(s.hint)}</span></div>`;
-    return `<div class="hrow">${name}<span class="st">${status}</span>
+    return `<div class="hrow">${name}<span class="st">${status}${silence}</span>
       <span class="n">${n(rs.length)}</span><span class="n">${n(rs.filter((r) => !r.card).length)}</span>
       <span class="n">${n(DATA.waiting[s.source] || 0)}</span><span class="n">${skipped === null ? "—" : n(skipped)}</span></div>`;
   }).join("");

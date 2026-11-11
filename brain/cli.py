@@ -6,7 +6,7 @@ import json
 import sys
 from typing import List, Optional
 
-from . import config, connectors, context, db, projects, render, status, summarize
+from . import config, connectors, context, db, health, projects, render, status, summarize
 from . import search as search_mod
 from . import sync as sync_mod
 from .timeutil import age_days, now_iso
@@ -113,6 +113,9 @@ def cmd_status(args, cfg) -> int:
               f"последний успешный {s['last_success_at'] or 'не было'}")
         if s["last_error"]:
             print(f"     ошибка: {s['last_error']}")
+    for q in health.quiet(conn):
+        print(f"  ВНИМАНИЕ: {render.source_name(q['source'])}: новых записей нет {q['silent_days']} дн., "
+              f"обычная пауза до {q['usual_days']} дн. — проверь источник")
     llm = cfg["llm"]
     state = f"{llm['model']} через {llm['base_url']}" if summarize.configured(llm) else "модель не настроена"
     print(f"пересказ: {state}; в очереди {summarize.pending_count(conn)}")

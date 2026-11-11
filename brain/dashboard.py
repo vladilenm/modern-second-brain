@@ -13,7 +13,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Tuple
 
-from . import connectors, status as status_mod, topics
+from . import connectors, health, status as status_mod, topics
 from .projects import project_key
 from .timeutil import now_iso
 
@@ -114,6 +114,8 @@ def collect(conn: sqlite3.Connection, cfg: dict) -> dict:
         "sync": {m["source"]: sync.get(m["connector"]) for m in meta},
         "waiting": {m["source"]: (last_sync.get(m["connector"]) or {}).get("waiting", 0) for m in meta},
         "files_seen": _files_seen(conn, cfg),
+        # Тишина источников: сколько дней нет новых записей и какая пауза для источника обычна.
+        "silence": {s["source"]: s for s in health.sources(conn)},
         "batch_limit": int(cfg["llm"].get("batch_limit", 40)),
         "preview_chars": PREVIEW_CHARS,
         "records": records,

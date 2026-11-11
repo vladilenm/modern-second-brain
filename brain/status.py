@@ -11,7 +11,7 @@ import sqlite3
 from pathlib import Path
 from typing import Optional
 
-from . import connectors, llm_settings, summarize
+from . import connectors, health, llm_settings, summarize
 from .timeutil import now_iso
 
 
@@ -47,6 +47,7 @@ def snapshot(conn: sqlite3.Connection) -> dict:
         for s in conn.execute("SELECT source, last_error FROM sync_state WHERE last_error IS NOT NULL")
     ]
     return {"sources": sources, "pending": summarize.pending_count(conn), "recent": recent, "sync_errors": errors,
+            "quiet": health.quiet(conn),
             "sources_meta": connectors.registry()}
 
 

@@ -1254,6 +1254,49 @@ class SearchFilterTests(unittest.TestCase):
         self.assertEqual([r["id"] for r in wide], [r["id"] for r in base if r["project"]])
 
 
+class HealthTests(unittest.TestCase):
+    def setUp(self):
+        from brain import health
+        self.health = health
+        self.conn = db.connect(":memory:")
+
+    def fill(self, source, days_ago):
+        for i, d in enumerate(days_ago):
+            stamp = (NOW - timedelta(days=d)).strftime("%Y-%m-%dT%H:%M:%SZ")
+            seed(self.conn, source, f"{source}{i}", "Запись", stamp)
+        # ingested_at ставит upsert «сейчас»: в тесте выравниваем его по дате записи.
+        self.conn.execute("UPDATE records SET ingested_at = updated_at WHERE source = ?", (source,))
+
+    def by_source(self):
+        return {s["source"]: s for s in self.health.sources(self.conn, now=NOW)}
+
+    def test_daily_source_gone_quiet(self):
+        self.fill("codex", range(10, 30))          # каждый день, потом 10 дней тишины
+        got = self.by_source()["codex"]
+        self.assertEqual((got["silent_days"], got["usual_days"], got["quiet"]), (10, 1, True))
+        self.assertEqual([s["source"] for s in self.health.quiet(self.conn, now=NOW)], ["codex"])
+
+    def test_rare_source_is_not_alarming(self):
+        self.fill("gmail", [12, 30, 50, 71, 90, 110, 131])   # раз в три недели, сейчас 12 дней тишины
+        got = self.by_source()["gmail"]
+        self.assertEqual((got["silent_days"], got["usual_days"], got["quiet"]), (12, 21, False))
+
+    def test_short_silence_and_short_history_give_no_verdict(self):
+        self.fill("codex", range(2, 30))           # два дня тишины — ещё рано
+        self.fill("kimi", [10, 11, 12])            # три активных дня — ритм непонятен
+        got = self.by_source()
+        self.assertFalse(got["codex"]["quiet"])
+        self.assertEqual((got["kimi"]["usual_days"], got["kimi"]["quiet"]), (None, False))
+
+    def test_status_and_dashboard_carry_the_verdict(self):
+        from brain import dashboard
+        self.fill("codex", range(10, 30))
+        # Здесь время настоящее, а не NOW: тишина с тех пор только выросла.
+        self.assertEqual([q["source"] for q in status.snapshot(self.conn)["quiet"]], ["codex"])
+        data = dashboard.collect(self.conn, make_cfg(Path(tempfile.mkdtemp())))
+        self.assertTrue(data["silence"]["codex"]["quiet"])
+
+
 class MCPTests(unittest.TestCase):
     def test_stdio_roundtrip(self):
         tmp = Path(tempfile.mkdtemp())

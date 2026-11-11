@@ -10,6 +10,8 @@
     "~/Documents/dev/автоматический-бот"
   ],
   "topic_stopwords": ["имя фамилия", "ник"],
+  "project_aliases": {"имя-репозитория": "имя-папки"},
+  "project_ignore": ["~/папка-с-прогонами/*"],
   "search": {
     "half_life_days": 120,
     "recency_weight": 0.35

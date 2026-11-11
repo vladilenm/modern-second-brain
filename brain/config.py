@@ -16,6 +16,10 @@ DEFAULTS = {
     "exclude_projects": [],
     # Слова и фразы, которые не считаются темами: своё имя, ник, название компании.
     "topic_stopwords": [],
+    # Склейка проектов: {"modern-second-brain": "brain"} — записи репозитория считаются проектом brain.
+    "project_aliases": {},
+    # Что проектом не считать: шаблоны путей или имён, например ["~/bench-runs/*", "tmp-*"].
+    "project_ignore": [],
     "llm": {
         # Любой OpenAI-совместимый API: OpenRouter, DeepSeek, Gemini, Ollama и т.д.
         "base_url": "",
@@ -117,4 +121,6 @@ def load() -> dict:
         cfg["db_path"] = os.environ["BRAIN_DB"]
     if os.environ.get("BRAIN_LLM_API_KEY") and cfg["llm"].get("use_env_key", True):
         cfg["llm"]["api_key"] = os.environ["BRAIN_LLM_API_KEY"]
+    from . import projects
+    projects.configure(cfg)  # правила проектов общие для панели, терминала и MCP
     return cfg

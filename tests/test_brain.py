@@ -485,6 +485,34 @@ class ProjectKeyTests(unittest.TestCase):
                          ("scratch", "Черновики"))
         self.assertEqual(project_key(None), ("", "без проекта"))
 
+    def test_tool_folders_are_not_projects(self):
+        from brain.projects import project_key
+        for path in ("~/Documents/Codex/2026-11-06/5", "~/Documents/Codex/2026-08-21/new-chat",
+                     "/Users/someone/Documents/Codex/2026-08-21/new-chat",
+                     "~/.codex/.chatgpt-projects/g-p-6ac06d681a1881918cf22375ec047475",
+                     "~/Documents/kimi/tasks/2026-11-01/10-43-38-02f8c257",
+                     "/private/tmp/claude-501/x/scratchpad/name-demo", "~", "~/Desktop"):
+            self.assertEqual(project_key(path), ("", "без проекта"), path)
+        # Папка внутри ~/Documents/Codex глубже одного уровня и обычные папки остаются проектами.
+        self.assertEqual(project_key("~/Documents/ChatGPT/club_bot")[0], "club-bot")
+        self.assertEqual(project_key("~/Documents/Codex/2026-11-06/site/app")[0], "app")
+        self.assertEqual(project_key("~/dev/client/.claude/worktrees/eager-varahamihira-7b868a"), ("client", "client"))
+        self.assertEqual(project_key("/Users/someone/dev/client"), ("client", "client"))
+
+    def test_aliases_and_ignore_from_config(self):
+        from brain import projects
+        self.addCleanup(projects.configure, None)
+        projects.configure({"project_aliases": {"modern_second_brain": "brain", "Idea 2 Content": "idea-to-content"},
+                            "project_ignore": ["~/bench-runs/*", "tmp-*"]})
+        self.assertEqual(projects.project_key("vladilenm/modern-second-brain"), ("brain", "brain"))
+        self.assertEqual(projects.project_key("~/brain"), ("brain", "brain"))
+        self.assertEqual(projects.project_key("vladilenm/idea-2-content")[0], "idea-to-content")
+        self.assertEqual(projects.project_key("~/bench-runs/kimi"), ("", "без проекта"))
+        self.assertEqual(projects.project_key("~/dev/tmp-probe"), ("", "без проекта"))
+        self.assertEqual(projects.project_key("~/dev/keep")[0], "keep")
+        projects.configure(None)
+        self.assertEqual(projects.project_key("vladilenm/modern-second-brain")[0], "modern-second-brain")
+
 
 class SyncTests(unittest.TestCase):
     def test_idle_window_and_cursor(self):

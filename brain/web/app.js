@@ -489,7 +489,7 @@ function weekProjects() {
 }
 // ---- Что нового: знания из записей, изменившихся за период
 const NEWS_MAIN = ["decision", "todo", "error", "fix"];
-const NEWS_TOP = 5, NEWS_BARE = 3;
+const NEWS_TOP = 5, NEWS_BARE = 3, NEWS_GROUPS = 5;
 const NEWS_RANGES = [["seen", "С прошлого просмотра"], ["today", "Сегодня"], ["7d", "7 дней"]];
 // seen — отметка «всё просмотрено» (время сборки панели); store — доступно ли хранилище; open — раскрытые списки.
 const news = { range: "7d", seen: null, store: false, open: new Set() };
@@ -608,7 +608,10 @@ function drawNews() {
         last ? `Синхронизация ${esc(ago(last))}.` : "Синхронизации ещё не было.");
     return;
   }
-  $("#news").innerHTML = m.groups.map(newsGroup).join("");
+  // Проектов бывает десятки: показываем первые, остальные — по кнопке. Markdown отдаёт все.
+  const shown = news.open.has("*") ? m.groups : m.groups.slice(0, NEWS_GROUPS);
+  $("#news").innerHTML = shown.map(newsGroup).join("") + (m.groups.length > shown.length
+    ? `<button class="more" type="button" data-nmore="*">Показать ещё ${esc(words(m.groups.length - shown.length, PROJECT_FORMS))}</button>` : "");
 }
 function initNews() {
   seg($("#news-range"), NEWS_RANGES, news.range, (v) => { news.range = v; news.open.clear(); saveNews(); drawNews(); });

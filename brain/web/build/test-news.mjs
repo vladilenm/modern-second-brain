@@ -102,6 +102,20 @@ try {
   assert.match(await mark.locator('#news-sub').innerText(), /^3 записи, 2 проекта · с \d+ [а-я]+, \d\d:\d\d$/);
   assert.equal(await mark.locator('#news-seen').isVisible(), true);
 
+  // Давняя отметка: проектов больше пяти — остальные за кнопкой, «Без проекта» в самом конце.
+  await mark.evaluate(() => localStorage.setItem('brain.news', JSON.stringify({ seen: new Date(Date.now() - 200 * 864e5).toISOString(), range: 'seen' })));
+  await mark.reload();
+  await mark.locator('#news').waitFor();
+  assert.equal((await titles(mark)).length, 5);
+  assert.equal(await mark.locator('#news > [data-nmore="*"]').innerText(), 'Показать ещё 2 проекта');
+  await mark.locator('#news > [data-nmore="*"]').click();
+  assert.equal((await titles(mark)).length, 7);
+  assert.equal((await titles(mark)).at(-1), 'Без проекта');
+  assert.equal((await mark.evaluate(() => newsMarkdown())).match(/^## /gm).length, 7, 'Markdown не обрезается');
+  await mark.locator('#news-range [data-v="7d"]').click();
+  await mark.locator('#news-range [data-v="seen"]').click();
+  assert.equal((await titles(mark)).length, 5, 'смена периода сворачивает список');
+
   // Хранилище недоступно: кнопки и варианта «С прошлого просмотра» нет, блок работает.
   const locked = await open(await context(), 'news.html', () => { Storage.prototype.setItem = () => { throw new Error('denied'); }; });
   assert.equal(await locked.locator('#news-seen').isHidden(), true);
@@ -122,7 +136,7 @@ try {
   assert.match(await copy.evaluate(() => newsMarkdown()), /^# Что нового сегодня\n\n## Без проекта\n/);
 
   assert.deepEqual(failures, [], 'нет ошибок в браузере');
-  console.log('PASS: что нового — периоды, группы, раскрытие, запись по клику, пустая база, узкий экран, отметка просмотра, хранилище, Markdown');
+  console.log('PASS: что нового — периоды, группы, раскрытие, запись по клику, пустая база, узкий экран, отметка просмотра, хранилище, Markdown, лимит проектов');
 } finally {
   await browser.close();
   await rm(out, { recursive: true, force: true });

@@ -1244,19 +1244,68 @@ class MCPTests(unittest.TestCase):
              "params": {"name": "search", "arguments": {"query": "поиск"}}},
             {"jsonrpc": "2.0", "id": 4, "method": "tools/call",
              "params": {"name": "get_record", "arguments": {"id": 1}}},
+            {"jsonrpc": "2.0", "id": 6, "method": "tools/call",
+             "params": {"name": "project", "arguments": {}}},
             {"jsonrpc": "2.0", "id": 5, "method": "nope"},
         ]
         env = dict(os.environ, BRAIN_DB=str(dbp), BRAIN_CONFIG=str(tmp / "none.json"), PYTHONPATH=str(ROOT))
         proc = subprocess.run([sys.executable, "-m", "brain.cli", "mcp"], env=env, timeout=30,
                               input="\n".join(json.dumps(m) for m in msgs).encode(), capture_output=True)
         replies = {r["id"]: r for r in map(json.loads, proc.stdout.decode().splitlines())}
-        self.assertEqual(sorted(replies), [1, 2, 3, 4, 5])
+        self.assertEqual(sorted(replies), [1, 2, 3, 4, 5, 6])
         self.assertEqual(replies[1]["result"]["protocolVersion"], "2025-06-18")
-        self.assertEqual([t["name"] for t in replies[2]["result"]["tools"]], ["search", "get_record"])
+        self.assertEqual([t["name"] for t in replies[2]["result"]["tools"]], ["search", "get_record", "recent", "project"])
         self.assertTrue(all(t["annotations"]["readOnlyHint"] for t in replies[2]["result"]["tools"]))
         self.assertIn("Второй мозг", replies[3]["result"]["content"][0]["text"])
         self.assertIn("настроим поиск BM25", replies[4]["result"]["content"][0]["text"])
         self.assertEqual(replies[5]["error"]["code"], -32601)
+        self.assertEqual(replies[6]["result"]["content"][0]["text"],
+                         "Проектов: 1, записей без проекта: 0\n\nbrain — 1 запись, последняя 2026-10-27")
+
+    def make_db(self):
+        from brain.timeutil import now_iso
+        cfg = make_cfg(Path(tempfile.mkdtemp()))
+        conn = db.connect(cfg["db_path"])
+        seed(conn, "codex", "m1", "Вебхук бота", now_iso(), project="~/dev/club-bot", atoms=["[fix] Починили вебхук"])
+        seed(conn, "codex", "m2", "Вебхук лендинга", now_iso(), project="~/p/club-landing")
+        conn.commit()
+        conn.close()
+        return cfg
+
+    def test_context_tools(self):
+        from brain import mcp_server
+        cfg = self.make_db()
+        text = lambda name, args: mcp_server.call_tool(name, args, cfg)["content"][0]["text"]
+        self.assertTrue(text("recent", {}).startswith("Что нового за 3 дня: 2 записи, 2 проекта"))
+        self.assertIn("в проекте club-bot: 1 запись", text("recent", {"days": 7, "project": "bot"}))
+        self.assertTrue(text("project", {"name": "club_bot"}).startswith("Проект club-bot\n"))
+        self.assertIn("Вебхук бота", text("search", {"query": "вебхук", "project": "bot", "days": 7}))
+        self.assertNotIn("Вебхук лендинга", text("search", {"query": "вебхук", "project": "bot"}))
+
+    def test_context_tools_report_bad_arguments(self):
+        from brain import mcp_server
+        cfg = self.make_db()
+        for name, args, needle in (("recent", {"days": 99}, "days: допустимо от 1 до 30"),
+                                   ("recent", {"project": "нет такого"}, "не найден"),
+                                   ("project", {"name": "club"}, "несколько проектов"),
+                                   ("search", {"query": "вебхук", "project": "club"}, "несколько проектов"),
+                                   ("search", {"query": "вебхук", "days": 0}, "days: допустимо от 1")):
+            reply = mcp_server.call_tool(name, args, cfg)
+            self.assertTrue(reply["isError"], (name, args))
+            self.assertIn(needle, reply["content"][0]["text"])
+
+    def test_cli_prints_the_same_text(self):
+        cfg = self.make_db()
+        env = dict(os.environ, BRAIN_DB=cfg["db_path"], BRAIN_CONFIG=str(Path(cfg["db_path"]).parent / "none.json"),
+                   PYTHONPATH=str(ROOT))
+        run = lambda *args: subprocess.run([sys.executable, "-m", "brain.cli", *args], env=env, timeout=30,
+                                           capture_output=True)
+        self.assertTrue(run("recent").stdout.decode().startswith("Что нового за 3 дня: 2 записи, 2 проекта"))
+        self.assertTrue(run("project", "bot").stdout.decode().startswith("Проект club-bot\n"))
+        self.assertIn("Вебхук бота", run("search", "вебхук", "--project", "bot", "--days", "7").stdout.decode())
+        missing = run("project", "нет такого")
+        self.assertEqual(missing.returncode, 1)
+        self.assertIn("не найден", missing.stdout.decode())
 
     def test_missing_db_is_not_created(self):
         from brain import mcp_server

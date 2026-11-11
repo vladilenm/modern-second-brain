@@ -1,4 +1,4 @@
-"""Командная строка: brain sync | search | show | status | summarize | mcp."""
+"""Командная строка: brain sync | search | recent | project | show | status | summarize | mcp."""
 from __future__ import annotations
 
 import argparse
@@ -6,7 +6,7 @@ import json
 import sys
 from typing import List, Optional
 
-from . import config, connectors, db, render, status, summarize
+from . import config, connectors, context, db, projects, render, status, summarize
 from . import search as search_mod
 from . import sync as sync_mod
 from .timeutil import age_days, now_iso
@@ -46,11 +46,38 @@ def cmd_summarize(args, cfg) -> int:
 
 def cmd_search(args, cfg) -> int:
     conn = db.connect(cfg["db_path"])
-    results = search_mod.search(conn, args.query, limit=args.n, source=args.source, **cfg["search"])
+    extra = {}
+    try:
+        if args.project:
+            extra["project_paths"] = projects.find(conn, args.project)["paths"]
+        if args.days is not None:
+            extra["days"] = context.int_arg(args.days, "days", 1, None)
+    except ValueError as exc:
+        print(exc)
+        return 1
+    results = search_mod.search(conn, args.query, limit=args.n, source=args.source, **extra, **cfg["search"])
     if args.json:
         print(json.dumps(results, ensure_ascii=False, indent=2))
     else:
         print(render.results_text(results) if results else "ничего не найдено")
+    return 0
+
+
+def cmd_recent(args, cfg) -> int:
+    try:
+        print(context.recent(db.connect(cfg["db_path"]), days=args.days, project=args.project, source=args.source))
+    except ValueError as exc:
+        print(exc)
+        return 1
+    return 0
+
+
+def cmd_project(args, cfg) -> int:
+    try:
+        print(context.project(db.connect(cfg["db_path"]), args.name))
+    except ValueError as exc:
+        print(exc)
+        return 1
     return 0
 
 
@@ -147,7 +174,19 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("-n", type=int, default=8, help="сколько результатов")
     s.add_argument("--source", help=", ".join(connectors.source_names()))
     s.add_argument("--json", action="store_true")
+    s.add_argument("--project", help="только в проекте: имя, часть имени или путь")
+    s.add_argument("--days", type=int, help="только записи не старше стольких дней")
     s.set_defaults(func=cmd_search)
+
+    s = sub.add_parser("recent", help="что нового за последние дни, по проектам")
+    s.add_argument("--days", type=int, default=3, help="сколько дней, от 1 до 30")
+    s.add_argument("--project", help="только проект: имя, часть имени или путь")
+    s.add_argument("--source", help=", ".join(connectors.source_names()))
+    s.set_defaults(func=cmd_recent)
+
+    s = sub.add_parser("project", help="список проектов или карточка проекта")
+    s.add_argument("name", nargs="?", help="имя проекта, часть имени или путь")
+    s.set_defaults(func=cmd_project)
 
     s = sub.add_parser("show", help="показать запись целиком")
     s.add_argument("id", type=int)

@@ -107,6 +107,17 @@ DEFAULTS = {
             "comments_per_video": 30,
             "max_videos_per_run": 100,
         },
+        "telegram": {
+            "enabled": False,
+            # Свои публичные каналы: "имя", "@имя" или ссылка t.me/имя. Читается страница t.me/s/имя, вход не нужен.
+            "channels": [],
+            "every_minutes": 60,
+            "summarize": True,
+            "api_base": "https://t.me",
+            # Сколько страниц (примерно по 17 постов) читать за прогон и пауза между запросами, секунды.
+            "max_pages_per_run": 40,
+            "request_pause": 1.0,
+        },
     },
 }
 

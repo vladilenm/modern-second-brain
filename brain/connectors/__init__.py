@@ -13,12 +13,13 @@ from .github import GitHubConnector
 from .gmail import GmailConnector
 from .kimi import KimiConnector
 from .notion import NotionConnector
+from .telegram import TelegramConnector
 from .yandex_mail import YandexMailConnector
 from .youtube import YouTubeConnector
 
 ALL = {c.name: c for c in (ClaudeCodeConnector, CodexConnector, ChatGPTExportConnector, GitHubConnector,
                            GmailConnector, YandexMailConnector, KimiConnector, NotionConnector,
-                           YouTubeConnector)}
+                           YouTubeConnector, TelegramConnector)}
 
 
 def enabled(cfg: dict, only: str = None) -> List[Connector]:

@@ -246,9 +246,9 @@ class RegistryTests(unittest.TestCase):
     def test_every_connector_is_described(self):
         reg = connectors.registry()
         self.assertEqual([r["source"] for r in reg],
-                         ["claude_code", "codex", "chatgpt", "github", "gmail", "yandex_mail", "kimi", "notion", "youtube"])
+                         ["claude_code", "codex", "chatgpt", "github", "gmail", "yandex_mail", "kimi", "notion", "youtube", "telegram"])
         self.assertEqual([r["connector"] for r in reg],
-                         ["claude_code", "codex", "chatgpt_export", "github", "gmail", "yandex_mail", "kimi", "notion", "youtube"])
+                         ["claude_code", "codex", "chatgpt_export", "github", "gmail", "yandex_mail", "kimi", "notion", "youtube", "telegram"])
         for r in reg:
             self.assertTrue(r["title"] and r["about"], r)
         types = {r["source"]: r["type"] for r in reg}
@@ -1474,6 +1474,130 @@ class YouTubeTests(unittest.TestCase):
         self.assertEqual((hit["source"], hit["title"]), ("youtube", "Видео new"))
         totals = sync_mod.sync(self.cfg, self.conn, only="youtube", log=lambda *_: None)
         self.assertEqual((totals["youtube"]["new"], totals["youtube"]["changed"]), (0, 0))
+
+
+class FakeTelegram(http.server.BaseHTTPRequestHandler):
+    """Фейковая страница t.me/s/<канал>: по три поста на страницу, ?before=N листает назад."""
+    posts: dict = {}   # номер → HTML блока поста
+    hits: list = []
+
+    def do_GET(self):
+        path, _, query = self.path.partition("?")
+        before = int(urllib.parse.parse_qs(query).get("before", ["0"])[0])
+        FakeTelegram.hits.append((path, before))
+        ids = sorted(i for i in FakeTelegram.posts if not before or i < before)[-3:]
+        blocks = "".join(FakeTelegram.posts[i] for i in ids) if path == "/s/mine" else ""
+        body = ('<html><head><meta property="og:title" content="Мой канал"></head><body>'
+                + blocks + "</body></html>").encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+def tg_post(number, inner, when="2026-11-10T09:00:00+00:00", extra=""):
+    text = f'<div class="tgme_widget_message_text js-message_text" dir="auto">{inner}</div>' if inner else ""
+    return (f'<div class="tgme_widget_message_wrap js-widget_message_wrap"><div class="tgme_widget_message js-widget_message" '
+            f'data-post="mine/{number}"><div class="tgme_widget_message_bubble">{extra}{text}'
+            f'<div class="tgme_widget_message_footer"><span class="tgme_widget_message_views">2.7K</span>'
+            f'<a class="tgme_widget_message_date" href="https://t.me/mine/{number}"><time datetime="{when}" class="time">09:00</time></a>'
+            f'</div></div></div></div>')
+
+
+class TelegramTests(unittest.TestCase):
+    def setUp(self):
+        from brain.connectors.telegram import TelegramConnector
+        self.server = http.server.HTTPServer(("127.0.0.1", 0), FakeTelegram)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+        reply = ('<a class="tgme_widget_message_reply" href="https://t.me/mine/2"><div class="tgme_widget_message_text '
+                 'js-message_text">Цитата чужого поста</div></a>')
+        fwd = '<div class="tgme_widget_message_forwarded_from">Forwarded from <a class="tgme_widget_message_forwarded_from_name" href="#"><span>Другой канал</span></a></div>'
+        FakeTelegram.hits = []
+        FakeTelegram.posts = {
+            2: tg_post(2, "<b>Первый пост</b><br/><br/>Текст &amp; детали", "2026-10-01T08:00:00+00:00"),
+            3: tg_post(3, "", "2026-10-02T08:00:00+00:00"),                       # только фото
+            5: tg_post(5, 'Статья: <a href="https://example.com/a">читать</a> и <a href="https://example.com/b">https://example.com/b</a>',
+                       "2026-10-05T08:00:00+00:00"),
+            6: tg_post(6, "Ответ на вопрос", "2026-10-06T08:00:00+00:00", extra=reply),
+            7: tg_post(7, "Пересланный текст", "2026-10-07T08:00:00+00:00", extra=fwd),
+            8: tg_post(8, "Свежий пост", "2026-11-10T09:00:00+00:00"),
+            9: tg_post(9, "Самый свежий", "2026-11-11T09:00:00+00:00"),
+        }
+        self.cfg = make_cfg(Path(tempfile.mkdtemp()))
+        self.cfg["sources"]["telegram"].update(
+            enabled=True, channels=["https://t.me/mine"], request_pause=0,
+            api_base=f"http://127.0.0.1:{self.server.server_port}")
+        self.connector = TelegramConnector
+        self.conn = db.connect(self.cfg["db_path"])
+
+    def fetch(self, cursor=None, **settings):
+        self.cfg["sources"]["telegram"].update(settings)
+        return list(self.connector(self.cfg).fetch(cursor))
+
+    def test_first_pass_reads_whole_history(self):
+        batches = self.fetch()
+        records = {r.external_id: r for b in batches for r in b.records}
+        self.assertEqual(sorted(records), ["mine/2", "mine/5", "mine/6", "mine/7", "mine/8", "mine/9"])  # пост 3 без текста
+        first = records["mine/2"]
+        self.assertEqual((first.source, first.kind, first.title, first.project), ("telegram", "document", "Первый пост", None))
+        self.assertEqual(first.body, "Канал: Мой канал (@mine)\n\nПервый пост\n\nТекст & детали")
+        self.assertEqual((first.updated_at, first.location), ("2026-10-01T08:00:00Z", "https://t.me/mine/2"))
+        self.assertEqual(records["mine/5"].body.split("\n\n", 1)[1],
+                         "Статья: читать (https://example.com/a) и https://example.com/b")
+        self.assertEqual(records["mine/6"].body.split("\n\n", 1)[1], "Ответ на вопрос")  # цитата не подмешалась
+        self.assertEqual(records["mine/7"].body, "Канал: Мой канал (@mine)\nПересланный пост\n\nПересланный текст")
+        self.assertNotIn("Другой канал", records["mine/7"].body)  # имя источника Telegram отдаёт нестабильно
+        self.assertNotIn("2.7K", "".join(r.body for r in records.values()))  # просмотры не берём
+        self.assertEqual(json.loads(batches[-1].cursor), {"mine": {"max": 9}})
+
+    def test_next_runs_take_new_posts_and_edits(self):
+        cursor = self.fetch()[-1].cursor
+        FakeTelegram.hits = []
+        again = self.fetch(cursor)
+        self.assertEqual([h[1] for h in FakeTelegram.hits], [0, 7])           # две свежие страницы, не вся история
+        self.assertEqual(sorted(r.external_id for b in again for r in b.records), ["mine/5", "mine/6", "mine/7", "mine/8", "mine/9"])
+        FakeTelegram.posts[8] = tg_post(8, "Свежий пост, исправленный")
+        FakeTelegram.posts[10] = tg_post(10, "Новый пост", "2026-11-12T09:00:00+00:00")
+        third = self.fetch(again[-1].cursor)
+        records = {r.external_id: r for b in third for r in b.records}
+        self.assertIn("исправленный", records["mine/8"].body)
+        self.assertIn("mine/10", records)
+        self.assertEqual(json.loads(third[-1].cursor), {"mine": {"max": 10}})
+
+    def test_history_continues_after_page_budget(self):
+        first = self.fetch(max_pages_per_run=1)
+        self.assertEqual(sorted(r.external_id for b in first for r in b.records), ["mine/7", "mine/8", "mine/9"])
+        self.assertEqual(json.loads(first[-1].cursor), {"mine": {"max": 9, "back": 7}})
+        second = self.fetch(first[-1].cursor, max_pages_per_run=40)
+        got = sorted(r.external_id for b in second for r in b.records)
+        self.assertIn("mine/2", got)
+        self.assertEqual(json.loads(second[-1].cursor), {"mine": {"max": 9}})
+
+    def test_bad_channels_and_sync(self):
+        from brain.connectors.telegram import channel_name
+        self.assertEqual([channel_name(x) for x in ("mine", "@mine", "https://t.me/mine", "t.me/s/mine?before=5")], ["mine"] * 4)
+        for bad in ("", "a b", "https://example.com/x"):
+            with self.assertRaises(RuntimeError):
+                channel_name(bad)
+        with self.assertRaises(RuntimeError) as err:
+            self.fetch(channels=["mine", "closed_channel"])
+        self.assertIn("у канала @closed_channel нет публичной страницы", str(err.exception))
+        with self.assertRaises(RuntimeError) as err:
+            self.fetch(channels=[])
+        self.assertIn("не указаны каналы", str(err.exception))
+        self.cfg["sources"]["telegram"]["channels"] = ["mine"]
+        totals = sync_mod.sync(self.cfg, self.conn, only="telegram", log=lambda *_: None)
+        self.assertEqual((totals["telegram"]["new"], totals["telegram"]["errors"]), (6, 0))
+        [hit] = search_mod.search(self.conn, "пересланный")
+        self.assertEqual((hit["source"], hit["location"]), ("telegram", "https://t.me/mine/7"))
+        totals = sync_mod.sync(self.cfg, self.conn, only="telegram", log=lambda *_: None)
+        self.assertEqual((totals["telegram"]["new"], totals["telegram"]["changed"]), (0, 0))
 
 
 class MCPTests(unittest.TestCase):

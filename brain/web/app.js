@@ -419,7 +419,7 @@ document.addEventListener("click", (e) => {
   const b = e.target.closest("[data-id]:not(li)");
   if (!b || b.closest(".drawer")) return;
   // Соседи по списку, из которого открыли запись: по ним ходят стрелки в карточке.
-  const scope = b.closest(".feed, .fresh-days, .atoms") || b.parentElement;
+  const scope = b.closest(".feed, .news, .atoms") || b.parentElement;
   openRecord(+b.dataset.id, [...new Set([...scope.querySelectorAll("[data-id]")].map((x) => +x.dataset.id))]);
 });
 function weekStart(d) {
@@ -436,7 +436,7 @@ function renderOverview() {
     overviewReady = true;
     baseLine();
     weekProjects();
-    fresh();
+    initNews();
     seg($("#weekly-range"), [["3m", "3 месяца"], ["1y", "Год"], ["all", "Всё"]], range, (v) => { range = v; drawWeekly(); });
   }
   drawWeekly();
@@ -487,19 +487,106 @@ function weekProjects() {
   $("#quick").innerHTML = top.length
     ? `<span class="quick-label">Темы недели</span>${top.map(([t]) => `<button class="chip" type="button" data-q="${esc(t)}">${esc(t)}</button>`).join("")}<a class="link" href="#topics">все темы</a>` : "";
 }
-function fresh() {
-  const groups = [];
-  for (const r of R.slice(0, 10)) {
-    const label = dayLabel(date(r.updated_at));
-    if (!groups.length || groups[groups.length - 1].label !== label) groups.push({ label, list: [] });
-    groups[groups.length - 1].list.push(r);
+// ---- Что нового: знания из записей, изменившихся за период
+const NEWS_MAIN = ["decision", "todo", "error", "fix"];
+const NEWS_TOP = 5, NEWS_BARE = 3;
+const NEWS_RANGES = [["seen", "С прошлого просмотра"], ["today", "Сегодня"], ["7d", "7 дней"]];
+// seen — отметка «всё просмотрено» (время сборки панели); store — доступно ли хранилище; open — раскрытые списки.
+const news = { range: "7d", seen: null, store: false, open: new Set() };
+function newsStart() {
+  if (news.range === "seen" && news.seen) return new Date(news.seen).getTime();
+  if (news.range === "today") { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); }
+  return NOW - 7 * DAY;
+}
+// Группы по проекту: main — решения, задачи, ошибки, исправления; rest — команды, факты и прочее; bare — записи без знаний.
+function newsModel() {
+  const from = newsStart(), by = new Map();
+  let count = 0;
+  for (const r of R) {
+    if (!(new Date(r.updated_at).getTime() > from)) continue;
+    count++;
+    const g = by.get(r.pkey) || by.set(r.pkey, { key: r.pkey, records: [], main: [], rest: [], bare: [] }).get(r.pkey);
+    g.records.push(r);
+    const atoms = index().get(r.id).atoms;
+    if (!atoms.length) { g.bare.push(r); continue; }
+    // Запись начата до начала периода — это продолжение: её знания могли появиться раньше.
+    const cont = !!r.started_at && new Date(r.started_at).getTime() <= from;
+    for (const a of atoms) (NEWS_MAIN.includes(a.type) ? g.main : g.rest).push({ type: a.type, text: a.text, r, cont });
   }
-  $("#fresh").innerHTML = groups.map((g) => `<p class="label">${esc(g.label)}</p><div class="fresh">${g.list.map((r) => `
-    <button type="button" data-id="${r.id}">
-      <span class="dot" style="background:${color(r.source)}" title="${esc(srcName(r.source))}"></span>
-      <span><span class="t">${esc(r.title)}</span><span class="m">${esc(srcName(r.source))}, ${esc(projName(r.pkey))}</span></span>
-      <span class="d">${esc(clock(date(r.updated_at)))}</span>
-    </button>`).join("")}</div>`).join("") || empty("Записей пока нет", "Запусти <code>brain sync</code>.");
+  const groups = [...by.values()];
+  // R идёт от свежих к старым, сортировка устойчива: внутри типа порядок по свежести сохраняется.
+  for (const g of groups) g.main.sort((a, b) => NEWS_MAIN.indexOf(a.type) - NEWS_MAIN.indexOf(b.type));
+  groups.sort((a, b) => !a.key - !b.key || b.main.length - a.main.length
+    || new Date(b.records[0].updated_at) - new Date(a.records[0].updated_at));
+  return { groups, count };
+}
+const newsName = (key) => (key ? projName(key) : "Без проекта");
+function newsTally(g) {
+  const parts = [words(g.records.length, RECORD_FORMS)];
+  for (const t of NEWS_MAIN) {
+    const c = g.main.filter((a) => a.type === t).length;
+    if (c) parts.push(words(c, ATOM[t]));
+  }
+  return parts.join(" · ");
+}
+function newsPeriod() {
+  if (news.range === "today") return "сегодня";
+  if (news.range === "seen" && news.seen) {
+    const d = new Date(news.seen);
+    return `с ${d.toLocaleDateString("ru-RU", { day: "numeric", month: "long" })}, ${clock(d)}`;
+  }
+  return "за 7 дней";
+}
+const newsMore = (id, label) => `<button class="nmore" type="button" data-nmore="${esc(id)}">${esc(label)}</button>`;
+function newsAtom(a) {
+  const tone = a.type === "todo" ? "wait" : a.type === "error" ? "err" : "";
+  return `<li><button type="button" data-id="${a.r.id}" title="${esc(a.r.title)}">
+    <span class="dot" style="background:${color(a.r.source)}" title="${esc(srcName(a.r.source))}"></span>
+    <span class="tag ${tone}">${esc(atomLabel(a.type))}</span>
+    <span class="x">${esc(a.text)}</span>${a.cont ? `<span class="cont">продолжение</span>` : ""}
+  </button></li>`;
+}
+function newsGroup(g) {
+  const main = news.open.has(g.key + "|main") ? g.main : g.main.slice(0, NEWS_TOP);
+  const bare = news.open.has(g.key + "|bare") ? g.bare : g.bare.slice(0, NEWS_BARE);
+  const head = g.key ? `<a href="#project/${encodeURIComponent(g.key)}">${esc(newsName(g.key))}</a>` : esc(newsName(g.key));
+  const rest = !g.rest.length ? ""
+    : news.open.has(g.key + "|rest") ? `<ul class="nlist rest">${g.rest.map(newsAtom).join("")}</ul>`
+    : newsMore(g.key + "|rest", `команды и факты: ${n(g.rest.length)}`);
+  const bareLine = !g.bare.length ? "" : `<p class="nbare">Без знаний: ${bare.map((r) => `<button type="button" data-id="${r.id}">${esc(r.title)}</button>`).join(", ")}${
+    g.bare.length > bare.length ? " " + newsMore(g.key + "|bare", `ещё ${n(g.bare.length - bare.length)}`) : ""}</p>`;
+  return `<section class="ngroup">
+    <h3>${head}</h3>
+    <p class="tally">${esc(newsTally(g))}</p>
+    ${main.length ? `<ul class="nlist">${main.map(newsAtom).join("")}</ul>` : ""}
+    ${g.main.length > main.length ? newsMore(g.key + "|main", `ещё ${n(g.main.length - main.length)}`) : ""}
+    ${rest}
+    ${bareLine}
+  </section>`;
+}
+function drawNews() {
+  const m = newsModel(), projects = m.groups.filter((g) => g.key).length;
+  const counts = m.count ? [words(m.count, RECORD_FORMS), projects && words(projects, PROJECT_FORMS)].filter(Boolean).join(", ") : "";
+  $("#news-sub").textContent = [counts, newsPeriod()].filter(Boolean).join(" · ");
+  if (!m.count) {
+    const last = date(st.last_sync_at);
+    $("#news").innerHTML = !R.length ? empty("Записей пока нет", "Запусти <code>brain sync</code>.")
+      : empty(news.range === "seen" ? "С прошлого просмотра ничего не изменилось" : "За этот период записей не было",
+        last ? `Синхронизация ${esc(ago(last))}.` : "Синхронизации ещё не было.");
+    return;
+  }
+  $("#news").innerHTML = m.groups.map(newsGroup).join("");
+}
+function initNews() {
+  seg($("#news-range"), NEWS_RANGES, news.range, (v) => { news.range = v; news.open.clear(); drawNews(); });
+  $('#news-range [data-v="seen"]').hidden = !news.seen;
+  $("#news").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-nmore]");
+    if (!b) return;
+    news.open.add(b.dataset.nmore);
+    drawNews();
+  });
+  drawNews();
 }
 function weeklyBuckets() {
   const series = SRC.map((s) => ({ key: s.source, title: esc(s.title), color: color(s.source) }));

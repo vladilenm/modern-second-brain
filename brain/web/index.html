@@ -54,17 +54,24 @@
         <p class="base-line" id="base-line"></p>
       </div>
       <p class="notice err" id="base-alert" hidden></p>
-      <div class="split">
-        <div class="card">
-          <h2 class="card-title">Активные проекты</h2>
-          <p class="card-sub" id="week-sub"></p>
-          <div class="fresh" id="week-projects"></div>
+      <div class="card">
+        <div class="card-head">
+          <div>
+            <h2 class="card-title">Что нового</h2>
+            <p class="card-sub" id="news-sub"></p>
+          </div>
+          <div class="news-tools">
+            <div class="seg" id="news-range" role="group" aria-label="Период"></div>
+            <button class="btn sm" type="button" id="news-seen" hidden>Всё просмотрено</button>
+            <button class="btn sm" type="button" id="news-copy" hidden>Скопировать как Markdown</button>
+          </div>
         </div>
-        <div class="card">
-          <h2 class="card-title">Свежие записи</h2>
-          <p class="card-sub">Последнее, что попало в базу</p>
-          <div class="fresh-days" id="fresh"></div>
-        </div>
+        <div class="news" id="news"></div>
+      </div>
+      <div class="card">
+        <h2 class="card-title">Активные проекты</h2>
+        <p class="card-sub" id="week-sub"></p>
+        <div class="fresh" id="week-projects"></div>
       </div>
       <div class="card chart-card">
         <div class="card-head">

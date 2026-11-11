@@ -1,4 +1,5 @@
 """Synthetic, private-data-free dashboard for the WebGL browser checks."""
+import copy
 import json
 import sys
 from datetime import datetime, timedelta, timezone
@@ -32,6 +33,24 @@ for record in data["records"]:
         record["questions"] = ["Как мы делали субтитры для рилсов?"]
 html = dashboard.assemble().replace("/*__DATA__*/null", json.dumps(data, ensure_ascii=False).replace("</", "<\\/"), 1)
 (out / "dashboard.html").write_text(html, encoding="utf-8")
+# «Что нового»: новая запись со знаниями, продолжение, записи без знаний, запись без проекта.
+news = copy.deepcopy(data)
+for record in news["records"]:
+    record["atoms"] = []
+    record["started_at"] = record["updated_at"]
+    if record["title"] == "Запись 01":
+        record["atoms"] = [f"[decision] Решение {k}" for k in range(1, 7)] + [
+            "[error] Сборка падала без ffmpeg", "[command] brain sync --rescan", "[fact] Субтитры хранятся в srt"]
+    if record["title"] == "Запись 02":
+        record["atoms"] = ["[todo] Проверить шрифт на телефоне"]
+        record["started_at"] = (now - timedelta(days=30)).isoformat()
+    if record["title"] == "Запись 20":
+        record["atoms"] = ["[fix] Исправили путь к базе"]
+        record["project"] = None
+        record["pkey"] = ""
+(out / "news.html").write_text(
+    dashboard.assemble().replace("/*__DATA__*/null", json.dumps(news, ensure_ascii=False).replace("</", "<\\/"), 1),
+    encoding="utf-8")
 data["records"] = []
 data["projects"] = {}
 data["graph"]["edges"] = []

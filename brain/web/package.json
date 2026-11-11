@@ -4,7 +4,8 @@
   "type": "module",
   "scripts": {
     "build": "node build/vendor.mjs",
-    "test:graph": "node build/test-graph.mjs"
+    "test:graph": "node build/test-graph.mjs",
+    "test:news": "node build/test-news.mjs"
   },
   "dependencies": {
     "3d-force-graph": "1.80.1",

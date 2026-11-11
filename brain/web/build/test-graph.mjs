@@ -213,7 +213,7 @@ try {
   const talk = await home.evaluate(() => turns({ preview: 'Пользователь: привет\n\nкак дела\n\nClaude: хорошо' }));
   assert.deepEqual(talk.map(t => [t.who, t.text]), [['Пользователь', 'привет\n\nкак дела'], ['Claude', 'хорошо']]);
   await home.keyboard.press('Escape');
-  await home.locator('#fresh button[data-id]').first().click();
+  await home.locator('#news button[data-id]').first().click();
   const first = await home.locator('.drawer').getAttribute('data-id');
   await home.keyboard.press('ArrowRight');
   await home.waitForFunction((id) => document.querySelector('.drawer').dataset.id !== id, first);

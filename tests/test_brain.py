@@ -349,6 +349,23 @@ class TopicsTests(unittest.TestCase):
                       "/Users/vladilen/Downloads/Telegram Desktop/x", "~/brain/inbox"):
             self.assertIsNone(topics.normalize(noise), noise)
 
+    def test_contacts_months_and_placeholders_are_not_topics(self):
+        from brain import topics
+        for noise in ("i@example.ru", "@nick", "https://t.me/nick", "октябрь", "мая", "main"):
+            self.assertIsNone(topics.normalize(noise), noise)
+        self.assertEqual(topics.normalize("@vitejs/plugin-react"), "@vitejs/plugin-react")
+        self.assertEqual(topics.record_topics(None, "Без названия"), [])
+        self.assertEqual([k for k, _ in topics.record_topics(None, "owner/mac-draw — коммиты за ноябрь 2026")], ["mac-draw"])
+
+    def test_title_words_become_topics_only_if_known_as_keywords(self):
+        from brain import topics
+        rows = [(1, "вебинар, воронка", ""), (2, "", "Какие вебинары создать"), (3, None, "Основной вебинар")]
+        t = topics.build(rows)
+        self.assertEqual(t.keys[2], ["вебинар"])
+        self.assertEqual(t.keys[3], ["вебинар"])
+        self.assertEqual(topics.build([(2, "", "Монтаж рилса")]).keys[2], ["монтаж", "рилс"])
+        self.assertEqual(topics.build(rows, stop=["Вебинары"]).keys[1], ["воронк"])
+
     def test_record_topics_falls_back_to_title(self):
         from brain import topics
         self.assertEqual([k for k, _ in topics.record_topics("Рилс, рилса, 2026-10-19", "x")], ["рилс"])

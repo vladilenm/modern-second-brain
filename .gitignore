@@ -8,3 +8,4 @@ __pycache__/
 menubar/build/
 .claude/worktrees/
 .DS_Store
+node_modules/

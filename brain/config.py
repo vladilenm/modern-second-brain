@@ -14,6 +14,8 @@ DEFAULTS = {
     # Папки проектов, разговоры из которых в базу не берём (и удаляем, если уже есть).
     # Подпапки тоже исключаются: "~/Documents/dev/bot" убирает и "~/Documents/dev/bot/worker".
     "exclude_projects": [],
+    # Слова и фразы, которые не считаются темами: своё имя, ник, название компании.
+    "topic_stopwords": [],
     "llm": {
         # Любой OpenAI-совместимый API: OpenRouter, DeepSeek, Gemini, Ollama и т.д.
         "base_url": "",

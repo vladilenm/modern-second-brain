@@ -10,7 +10,7 @@ import urllib.parse
 from pathlib import Path
 from unittest import mock
 
-from brain import config, connectors, db, search, sync
+from brain import config, connectors, db, search, summarize, sync
 from brain.redact import MASK, redact
 
 if importlib.util.find_spec("brain.connectors.notion"):
@@ -237,6 +237,57 @@ class NotionTests(unittest.TestCase):
         self.routes["GET", "/v1/pages/" + B1 + "/markdown"] = {
             "markdown": "Теперь доступная часть", "truncated": False, "unknown_block_ids": []}
         self.assertEqual(self.run_sync()["changed"], 1)
+
+    def test_partial_page_signed_file_refresh_does_not_queue_another_summary(self):
+        route = ("GET", "/v1/pages/" + P1 + "/markdown")
+
+        def markdown(signature, text="Текст заметки", filename="image.png"):
+            url = ("https://prod-files-secure.s3.us-west-2.amazonaws.com/workspace/asset/" + filename
+                   + "?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Date=" + signature
+                   + "&X-Amz-Security-Token=" + signature + "&X-Amz-Signature=" + signature)
+            return {"markdown": text + '\n<img src="' + url + '"/>',
+                    "truncated": True, "unknown_block_ids": [B1]}
+
+        self.routes[route] = markdown("first")
+        self.assertEqual(self.run_sync()["new"], 1)
+        self.conn.execute("UPDATE records SET summarized_hash=content_hash, summarized_at='2026-11-02T12:00:00Z'")
+        self.conn.commit()
+        before = dict(self.conn.execute("SELECT * FROM records").fetchone())
+        self.routes[route] = markdown("refreshed")
+        self.assertEqual(self.run_sync()["changed"], 0)
+        self.assertEqual(summarize.pending_count(self.conn), 0)
+        self.assertEqual(dict(self.conn.execute("SELECT * FROM records").fetchone()), before)
+        # Частичную страницу по-прежнему перечитываем, чтобы не потерять открывшиеся блоки.
+        self.assertIn(P1, json.loads(db.get_cursor(self.conn, "notion"))["partial_pages"])
+        self.routes[route] = markdown("refreshed", text="Настоящая правка заметки")
+        self.assertEqual(self.run_sync()["changed"], 1)
+        self.assertEqual(summarize.pending_count(self.conn), 1)
+        self.routes[route] = markdown("refreshed", text="Настоящая правка заметки", filename="replacement.png")
+        self.assertEqual(self.run_sync()["changed"], 1)
+
+    def test_signed_file_urls_keep_identity_and_other_link_parameters(self):
+        for base in (
+            "https://prod-files-secure.s3.us-west-2.amazonaws.com/workspace/asset/file.pdf",
+            "https://s3.us-west-2.amazonaws.com/secure.notion-static.com/asset/file.pdf",
+            "https://secure.notion-static.com/asset/file.pdf",
+        ):
+            with self.subTest(base=base):
+                signed = base + "?page=2&X-Amz-Date=first&X-Amz-Security-Token=temporary&X-Amz-Signature=sig#section"
+                text = '[Документ](' + signed + ')\n<img src="' + signed + '"/>'
+                rec = notion.NotionConnector._record(page(), text)
+                self.assertEqual(rec.body, text.replace(signed, base + "?page=2#section"))
+        external = ("https://example.com/file.pdf?X-Amz-Date=first&version=1\n"
+                    "https://www.youtube.com/watch?v=video&t=12\n"
+                    "https://prod-files-secure.s3.us-west-2.amazonaws.com/asset/file.pdf?version=1")
+        self.assertEqual(notion.NotionConnector._record(page(), external).body, external)
+
+    def test_signed_file_normalization_handles_already_redacted_local_records(self):
+        base = "https://prod-files-secure.s3.us-west-2.amazonaws.com/workspace/asset/image.png"
+        signed = base + "?X-Amz-Date=first&X-Amz-Security-Token=" + "a" * 40 + "&X-Amz-Signature=sig"
+        existing = redact('<img src="' + signed + '" alt="Снимок"/>')
+        self.assertIn(MASK, existing)
+        self.assertEqual(notion.NotionConnector._record(page(), existing).body,
+                         '<img src="' + base + '" alt="Снимок"/>')
 
     def test_partial_page_retries_do_not_starve_new_pages(self):
         self.cfg["sources"]["notion"]["max_pages_per_run"] = 1

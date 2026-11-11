@@ -9,6 +9,7 @@
   "exclude_projects": [
     "~/Documents/dev/автоматический-бот"
   ],
+  "topic_stopwords": ["имя фамилия", "ник"],
   "search": {
     "half_life_days": 120,
     "recency_weight": 0.35

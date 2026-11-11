@@ -67,9 +67,91 @@ const neighbors = (id) => NB.get(id) || [];
 const pending = R.filter((r) => !r.card).length;
 const failed = R.filter((r) => !r.card && r.error).length;
 const syncErrors = Object.entries(DATA.sync).filter(([, s]) => s && s.last_error);
-const haystack = new Map(R.map((r) => [r.id, [r.title, projName(r.pkey), r.project, r.keywords, r.summary].join(" ").toLowerCase()]));
-const matchAll = (r, q) => q.every((w) => haystack.get(r.id).includes(w));
-const terms = (q) => q.trim().toLowerCase().split(/\s+/).filter(Boolean);
+const PCOUNT = projectCounts();
+
+// ---- Поиск по базе: карточка (название, проект, ключевые слова, пересказ, вопросы, знания) и начало текста.
+const nrm = (s) => String(s || "").toLowerCase().replace(/ё/g, "е");
+// Окончания от длинных к коротким: «субтитры», «субтитров», «субтитрами» сводятся к «субтитр».
+const ENDINGS = ["иями", "ями", "ами", "ией", "иях", "ого", "его", "ому", "ему", "ыми", "ими", "ить", "ать", "ять", "еть",
+  "ов", "ев", "ей", "ий", "ый", "ой", "ая", "яя", "ое", "ее", "ые", "ие", "ом", "ем", "ам", "ям", "ах", "ях", "ую", "юю", "ию", "ия", "ью",
+  "а", "я", "ы", "и", "у", "ю", "е", "о", "ь", "й"];
+function stem(w) {
+  if (w.length < 5 || !/^[а-я]+$/.test(w)) return w;
+  for (const e of ENDINGS) if (w.endsWith(e) && w.length - e.length >= 4) return w.slice(0, -e.length);
+  return w;
+}
+const terms = (q) => nrm(q).split(/[\s,;]+/).map((w) => w.replace(/^[«"'(]+|[»"').!?:]+$/g, "")).filter(Boolean).map(stem);
+let IX = null;
+function index() {
+  if (IX) return IX;
+  IX = new Map();
+  for (const r of R) {
+    const atoms = r.atoms.map((a) => { const p = parseAtom(a); return { type: p.type, text: p.text, n: nrm(p.text) }; });
+    const qs = r.questions.map((t) => ({ text: t, n: nrm(t) }));
+    const head = nrm([r.title, projName(r.pkey), r.project, r.keywords].join("\n"));
+    const sum = nrm(r.summary);
+    IX.set(r.id, { title: nrm(r.title), head, sum, atoms, qs, pre: nrm(r.preview),
+      card: [head, sum, ...qs.map((x) => x.n), ...atoms.map((x) => x.n)].join("\n") });
+  }
+  return IX;
+}
+// По карточке: фильтр графа. С текстом записи: общий поиск и лента.
+const matchAll = (r, q) => { const x = index().get(r.id); return q.every((w) => x.card.includes(w)); };
+const matchDeep = (r, q) => { const x = index().get(r.id); return q.every((w) => x.card.includes(w) || x.pre.includes(w)); };
+// Совпадение с оценкой и фрагментом, где нашлось. f: { source, days, type } — фильтры поиска.
+function hit(r, q, f = {}) {
+  if (f.source && r.source !== f.source) return null;
+  if (f.days && daysAgo(r.updated_at) > f.days) return null;
+  const x = index().get(r.id);
+  const count = (s) => q.reduce((k, w) => k + s.includes(w), 0);
+  if (f.type) {
+    // Тип знания: слова ищем в самих знаниях этого типа, название и проект задают контекст.
+    const own = x.atoms.filter((a) => a.type === f.type);
+    if (!own.length || !q.every((w) => x.head.includes(w) || own.some((a) => a.n.includes(w)))) return null;
+    let best = own[0], top = -1;
+    for (const a of own) { const c = count(a.n); if (c > top) { top = c; best = a; } }
+    return { r, score: top * 10 + count(x.head), sn: { tag: best.type, text: best.text } };
+  }
+  if (!q.every((w) => x.card.includes(w) || x.pre.includes(w))) return null;
+  let score = 0;
+  for (const w of q) score += x.title.includes(w) ? 10 : x.head.includes(w) ? 6 : x.card.includes(w) ? 4 : 1;
+  let sn = null, top = 0;
+  const offer = (c, tag, text) => { if (c > top) { top = c; sn = { tag, text }; } };
+  for (const a of x.atoms) offer(count(a.n), a.type, a.text);
+  for (const t of x.qs) offer(count(t.n), "q", t.text);
+  offer(count(x.sum), "", r.summary);
+  offer(count(x.pre), "text", r.preview);
+  if (q.length > 1 && top === q.length) score += 3;        // все слова рядом, в одном фрагменте
+  if (!sn && r.summary) sn = { tag: "", text: r.summary };
+  return { r, score, sn };
+}
+function excerpt(text, q, max = 180) {
+  const t = String(text || ""), low = nrm(t);
+  let at = -1;
+  for (const w of q) { const i = low.indexOf(w); if (i >= 0 && (at < 0 || i < at)) at = i; }
+  let from = 0;
+  if (at > 70) { from = at - 60; const sp = t.indexOf(" ", from); if (sp >= 0 && sp < at) from = sp + 1; }
+  return (from ? "…" : "") + t.slice(from, from + max).replace(/\s+/g, " ").trim() + (from + max < t.length ? "…" : "");
+}
+// Подсветка: от найденной основы до конца слова.
+function hl(text, q) {
+  const t = String(text || ""), low = nrm(t), spans = [];
+  for (const w of q) for (let i = low.indexOf(w); i >= 0; i = low.indexOf(w, i + w.length)) {
+    let e = i + w.length;
+    while (e < low.length && /[a-zа-я0-9]/.test(low[e])) e++;
+    spans.push([i, e]);
+  }
+  spans.sort((a, b) => a[0] - b[0]);
+  let out = "", pos = 0;
+  for (const [a, b] of spans) { if (a < pos) continue; out += `${esc(t.slice(pos, a))}<mark>${esc(t.slice(a, b))}</mark>`; pos = b; }
+  return out + esc(t.slice(pos));
+}
+const SNIP_TAG = { q: "вопрос", text: "в тексте" };
+function snippet(sn, q) {
+  if (!sn) return "";
+  const label = SNIP_TAG[sn.tag] || ATOM[sn.tag]?.[0] || (sn.tag ? "знание" : "");
+  return `${label ? `<span class="tag ${sn.tag === "todo" ? "wait" : ""}">${esc(label)}</span>` : ""}${hl(excerpt(sn.text, q), q)}`;
+}
 
 // ---- Состояние в меню
 (function sideState() {
@@ -100,6 +182,8 @@ const TABS = {
   overview: { title: "Обзор", render: renderOverview },
   graph: { title: "Граф", render: renderGraph },
   projects: { title: "Проекты", render: renderProjects },
+  topics: { title: "Темы", render: renderTopics },
+  knowledge: { title: "Знания", render: renderKnowledge },
   records: { title: "Записи", render: renderRecords },
 };
 let current = null;
@@ -107,6 +191,7 @@ function parseHash() {
   const [tab, ...rest] = location.hash.slice(1).split("/");
   const arg = decodeURIComponent(rest.join("/"));
   if (tab === "project") return { tab: "projects", arg };
+  if (tab === "topic") return { tab: "topics", arg };
   return TABS[tab] ? { tab, arg } : { tab: "overview", arg: "" };
 }
 function route() {
@@ -124,10 +209,13 @@ function route() {
   const prev = current;
   current = r;
   TABS[r.tab].render(r.arg);
+  if (graph) graph.setActive(r.tab === "graph");
   if (prev && changed && !(prev.tab === "graph" && r.tab === "graph")) {
     scrollTo(0, 0);
-    const h = $(`section[data-tab="${r.tab}"] h1:not([hidden])`) || $("#project-view h1");
-    if (h && !$(".drawer")) h.focus({ preventScroll: true });
+    const h = (r.tab === "topics" && r.arg && $("#topic-view h1")) || $(`section[data-tab="${r.tab}"] h1:not([hidden])`) || $("#project-view h1");
+    if ($(".drawer")) return;
+    if (r.tab === "overview" && matchMedia("(hover: hover)").matches) $("#q-global").focus({ preventScroll: true });
+    else if (h) h.focus({ preventScroll: true });
   }
 }
 const go = (hash) => { if (location.hash === hash) route(); else location.hash = hash; };
@@ -140,46 +228,174 @@ function closeMenu() { side.classList.remove("open"); scrim.hidden = true; menuB
 menuBtn.addEventListener("click", openMenu);
 scrim.addEventListener("click", closeMenu);
 
-// ---- Быстрый поиск
+// ---- Поиск: одно поле на всю панель. На обзоре оно в шапке, на остальных вкладках открывается поверх страницы.
+let openPalette = () => {};
 (function search() {
-  const input = $("#q-global"), list = $("#q-results");
-  let found = [], sel = -1;
+  const input = $("#q-global"), list = $("#q-results"), panel = $("#q-panel"), bar = $("#q-filters");
+  const finder = $("#finder"), home = $("#finder-home"), recentBox = $("#recent");
+  const PAGE = 8, RECENT_KEY = "brain.search.recent";
+  const sf = { type: "", days: 0, source: "" };
+  let found = [], sel = -1, wrap = null, limit = PAGE, recent = [];
+  try { recent = (JSON.parse(localStorage.getItem(RECENT_KEY)) || []).filter((x) => typeof x === "string"); } catch { /* без хранилища просто не помним */ }
+  const filtered = () => Boolean(sf.type || sf.days || sf.source);
+  function drawRecent() {
+    recentBox.hidden = !recent.length;
+    recentBox.innerHTML = recent.length
+      ? `<span class="quick-label">Недавнее</span>${recent.map((q) => `<button class="chip" type="button" data-q="${esc(q)}">${esc(q)}</button>`).join("")}<button class="link" type="button" data-clear>очистить</button>` : "";
+  }
+  function remember(text) {
+    const q = text.trim();
+    if (q.length < 2) return;
+    recent = [q, ...recent.filter((x) => nrm(x) !== nrm(q))].slice(0, 6);
+    try { localStorage.setItem(RECENT_KEY, JSON.stringify(recent)); } catch { /* не страшно */ }
+    drawRecent();
+  }
+  function drawFilters() {
+    const types = Object.keys(ATOM_TITLE);
+    const group = (key, options) => `<div class="sf-g" role="group">${options.map(([v, label, dot]) =>
+      `<button type="button" data-k="${key}" data-v="${esc(v)}" aria-pressed="${String(sf[key] || "") === String(v)}">${dot ? `<span class="dot" style="background:${dot}"></span>` : ""}${esc(label)}</button>`).join("")}</div>`;
+    bar.innerHTML = group("type", [["", "Всё"], ...types.map((t) => [t, ATOM_TITLE[t]])])
+      + group("days", [["", "Любое время"], [7, "Неделя"], [30, "Месяц"], [365, "Год"]])
+      + group("source", [["", "Все источники"], ...SRC.filter((s) => s.count).map((s) => [s.source, s.title, color(s.source)])]);
+  }
+  function show(open) {
+    panel.hidden = !open;
+    input.setAttribute("aria-expanded", String(open));
+    if (!open) { found = []; sel = -1; }
+  }
   function render() {
     const q = terms(input.value);
-    if (!q.length) { list.hidden = true; input.setAttribute("aria-expanded", "false"); return; }
-    found = R.filter((r) => matchAll(r, q)).slice(0, 10);
-    sel = found.length ? 0 : -1;
-    list.innerHTML = found.length
-      ? found.map((r, i) => `<li role="option" id="qr-${i}" data-id="${r.id}" aria-selected="${i === sel}">${esc(r.title)}<small>${esc(srcName(r.source))}, ${esc(projName(r.pkey))}, ${esc(dayMonth(date(r.updated_at)))}</small></li>`).join("")
-      : `<li class="none">Ничего не нашлось</li>`;
-    list.hidden = false;
-    input.setAttribute("aria-expanded", "true");
+    if (!q.length && !filtered()) {
+      // Пустое поле поверх страницы: недавние запросы. На обзоре они и так под полем.
+      if (!wrap || !recent.length) return show(false);
+      found = recent.map((text) => ({ kind: "recent", text }));
+    } else {
+      const projects = filtered() || !q.length ? [] : Object.keys(PCOUNT).filter((k) => q.every((w) => nrm(projName(k)).includes(w)))
+        .sort((a, b) => PCOUNT[b] - PCOUNT[a]).slice(0, 3);
+      const all = [];
+      for (const r of R) { const h = hit(r, q, sf); if (h) all.push(h); }
+      all.sort((a, b) => b.score - a.score);          // при равной оценке свежие выше: R уже по дате
+      found = [...projects.map((key) => ({ kind: "project", key })), ...all.slice(0, limit).map((h) => ({ kind: "record", ...h }))];
+      // Тип знания и период есть только здесь, поэтому с ними список растёт на месте.
+      if (all.length > limit) found.push(sf.type || sf.days ? { kind: "more", count: all.length - limit } : { kind: "all", count: all.length });
+    }
+    sel = found.length ? Math.min(Math.max(sel, 0), found.length - 1) : -1;
+    const q0 = q;
+    list.innerHTML = found.map((x, i) => {
+      const body = x.kind === "project"
+        ? `<span class="tag">проект</span><span><span class="t">${hl(projName(x.key), q0)}</span><small>${words(PCOUNT[x.key], RECORD_FORMS)}</small></span>`
+        : x.kind === "record"
+          ? `<span class="dot" style="background:${color(x.r.source)}"></span><span><span class="t">${hl(x.r.title, q0)}</span>${x.sn ? `<span class="sn">${snippet(x.sn, q0)}</span>` : ""}<small>${esc(srcName(x.r.source))}, ${esc(projName(x.r.pkey))}, ${esc(dayMonth(date(x.r.updated_at)))}</small></span>`
+          : x.kind === "recent"
+            ? `<span class="tag">недавнее</span><span class="t">${esc(x.text)}</span>`
+            : x.kind === "more"
+              ? `<span class="t all">Показать ещё ${n(Math.min(20, x.count))} из ${n(x.count)}</span>`
+              : `<span class="t all">Все ${words(x.count, ["результат", "результата", "результатов"])} в «Записях»</span>`;
+      return `<li role="option" id="qr-${i}" data-i="${i}" class="k-${x.kind}" aria-selected="${i === sel}">${body}</li>`;
+    }).join("") || `<li class="none">Ничего не нашлось${filtered() ? `. <button class="link" type="button" data-reset>Сбросить фильтры</button>` : ""}</li>`;
+    drawFilters();
+    show(true);
   }
   function mark() {
-    list.querySelectorAll("li[data-id]").forEach((li, i) => li.setAttribute("aria-selected", i === sel));
+    list.querySelectorAll("li[data-i]").forEach((li, i) => li.setAttribute("aria-selected", i === sel));
     input.setAttribute("aria-activedescendant", sel >= 0 ? `qr-${sel}` : "");
+    list.querySelector('li[aria-selected="true"]')?.scrollIntoView({ block: "nearest" });
   }
-  function pick(id) { list.hidden = true; input.blur(); closeMenu(); openRecord(id); }
-  input.addEventListener("input", render);
+  function closePalette() {
+    if (!wrap) return;
+    home.append(finder);
+    wrap.remove();
+    wrap = null;
+  }
+  openPalette = () => {
+    closeMenu();
+    if (current?.tab === "overview" && !wrap) { scrollTo(0, 0); input.focus(); input.select(); return; }
+    if (!wrap) {
+      wrap = document.createElement("div");
+      wrap.className = "palette";
+      wrap.addEventListener("mousedown", (e) => { if (e.target === wrap) closePalette(); });
+      wrap.append(finder);
+      // Во весь экран браузер показывает только развёрнутый элемент.
+      (fsElement() || document.body).append(wrap);
+    }
+    input.focus();
+    input.select();
+  };
+  function pick(i) {
+    const x = found[i];
+    if (!x) return;
+    if (x.kind === "recent") { input.value = x.text; sel = 0; return render(); }
+    if (x.kind === "more") { limit += 20; sel = i; render(); return mark(); }
+    const ids = found.filter((f) => f.kind === "record").map((f) => f.r.id);
+    remember(input.value);
+    show(false);
+    input.blur();
+    closePalette();
+    if (x.kind === "record") openRecord(x.r.id, ids);
+    else if (x.kind === "project") go(`#project/${encodeURIComponent(x.key)}`);
+    else showAllResults(input.value, sf.source);
+  }
+  input.addEventListener("input", () => { limit = PAGE; sel = 0; render(); });
   input.addEventListener("focus", render);
+  // Фильтры не забирают фокус у поля: печатать можно дальше.
+  panel.addEventListener("mousedown", (e) => { if (e.target.closest("button")) e.preventDefault(); });
+  panel.addEventListener("click", (e) => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    if (b.dataset.k) sf[b.dataset.k] = b.dataset.k === "days" ? +b.dataset.v : b.dataset.v;
+    else if ("reset" in b.dataset) Object.assign(sf, { type: "", days: 0, source: "" });
+    else return;
+    limit = PAGE; sel = 0;
+    render();
+  });
+  const useQuery = (e) => {
+    if (e.target.closest("[data-clear]")) {
+      recent = [];
+      try { localStorage.removeItem(RECENT_KEY); } catch { /* не страшно */ }
+      return drawRecent();
+    }
+    const b = e.target.closest("[data-q]");
+    if (!b) return;
+    input.value = b.dataset.q;
+    limit = PAGE; sel = 0;
+    input.focus();
+    render();
+  };
+  drawRecent();
   input.addEventListener("keydown", (e) => {
+    if (panel.hidden && e.key !== "Escape") return;
     if (e.key === "ArrowDown" && found.length) { sel = (sel + 1) % found.length; mark(); e.preventDefault(); }
     else if (e.key === "ArrowUp" && found.length) { sel = (sel - 1 + found.length) % found.length; mark(); e.preventDefault(); }
-    else if (e.key === "Enter" && sel >= 0) pick(found[sel].id);
-    else if (e.key === "Escape") { input.value = ""; render(); input.blur(); }
-  });
-  list.addEventListener("mousedown", (e) => { const li = e.target.closest("li[data-id]"); if (li) { e.preventDefault(); pick(+li.dataset.id); } });
-  input.addEventListener("blur", () => setTimeout(() => { list.hidden = true; }, 100));
-  addEventListener("keydown", (e) => {
-    const t = e.target;
-    if (e.key === "/" && !e.metaKey && !e.ctrlKey && !(t.closest && t.closest("input, textarea, [contenteditable]"))) {
-      e.preventDefault();
-      if (innerWidth < 1024) openMenu();
-      input.focus();
-      input.select();
+    else if (e.key === "Enter" && sel >= 0) { e.preventDefault(); pick(sel); }   // иначе Enter долетит до «Закрыть» в открывшейся карточке
+    else if (e.key === "Escape") {
+      e.stopPropagation();
+      if (wrap) closePalette(); else { input.value = ""; Object.assign(sf, { type: "", days: 0, source: "" }); render(); input.blur(); }
     }
   });
+  list.addEventListener("mousedown", (e) => { const li = e.target.closest("li[data-i]"); if (li) { e.preventDefault(); pick(+li.dataset.i); } });
+  input.addEventListener("blur", () => setTimeout(() => { if (document.activeElement !== input) show(false); }, 100));
+  $("#q-open").addEventListener("click", () => openPalette());
+  // Темы недели и недавние запросы под полем: клик подставляет их в поиск.
+  $("#quick").addEventListener("click", useQuery);
+  recentBox.addEventListener("click", useQuery);
+  addEventListener("keydown", (e) => {
+    const t = e.target;
+    if (e.key !== "/" || e.metaKey || e.ctrlKey || (t.closest && t.closest("input, textarea, [contenteditable]"))) return;
+    e.preventDefault();
+    // На графе «/» ведёт в его собственный поиск: он подсвечивает найденное прямо на холсте.
+    const gq = current?.tab === "graph" && !$(".drawer") && $("#g-q");
+    if (gq) { gq.focus(); gq.select(); } else openPalette();
+  });
 })();
+function showAllResults(q, source) {
+  rf.q = q; rf.source = source || "all"; rf.status = "all"; rf.limit = 100;
+  $("#q-records").value = q;
+  go("#records");
+  if (recordsReady) {
+    for (const id of ["#f-source", "#f-status"]) $(id).querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", b.dataset.v === (id === "#f-source" ? rf.source : "all")));
+    drawFeed();
+  }
+}
 
 // ---- Общие куски разметки
 function seg(el, options, value, onChange) {
@@ -191,17 +407,20 @@ function seg(el, options, value, onChange) {
     onChange(b.dataset.v);
   });
 }
-function recordRow(r) {
+function recordRow(r, sub) {
   const status = r.card ? "" : r.error ? `<span class="tag err">ошибка</span>` : `<span class="tag wait">ждёт</span>`;
   return `<button class="rrow" type="button" data-id="${r.id}">
     <span class="dot" style="background:${color(r.source)}" title="${esc(srcName(r.source))}"></span>
-    <span><span class="t">${esc(r.title)}</span>${r.summary ? `<span class="s">${esc(r.summary)}</span>` : ""}</span>
+    <span><span class="t">${esc(r.title)}</span>${sub || r.summary ? `<span class="s">${sub || esc(r.summary)}</span>` : ""}</span>
     <span class="p">${status}<span class="mono" title="${esc(r.project)}">${esc(projName(r.pkey))}</span></span>
   </button>`;
 }
 document.addEventListener("click", (e) => {
   const b = e.target.closest("[data-id]:not(li)");
-  if (b && !b.closest(".drawer")) openRecord(+b.dataset.id);
+  if (!b || b.closest(".drawer")) return;
+  // Соседи по списку, из которого открыли запись: по ним ходят стрелки в карточке.
+  const scope = b.closest(".feed, .fresh-days, .atoms") || b.parentElement;
+  openRecord(+b.dataset.id, [...new Set([...scope.querySelectorAll("[data-id]")].map((x) => +x.dataset.id))]);
 });
 function weekStart(d) {
   const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
@@ -215,47 +434,72 @@ let overviewReady = false, range = "3m";
 function renderOverview() {
   if (!overviewReady) {
     overviewReady = true;
-    lede();
-    kpis();
-    topProjects();
+    baseLine();
+    weekProjects();
     fresh();
     seg($("#weekly-range"), [["3m", "3 месяца"], ["1y", "Год"], ["all", "Всё"]], range, (v) => { range = v; drawWeekly(); });
   }
   drawWeekly();
 }
-function lede() {
-  const gen = date(DATA.generated_at), last = date(st.last_sync_at);
-  const parts = [`Панель собрана в <b>${clock(gen)}</b>.`];
-  if (last) parts.push(`Последняя синхронизация в <b>${clock(last)}</b>, ${ago(last)}.`);
-  parts.push(pending ? `Без карточки ${words(pending, RECORD_FORMS)}, их перескажут следующие синхронизации.` : "Всё забрано и пересказано.");
-  $("#lede").innerHTML = parts.join(" ");
-}
-function kpis() {
-  const active7 = R.filter((r) => daysAgo(r.updated_at) <= 7).length;
-  const keys = Object.keys(PROJECTS).filter(Boolean);
-  const live30 = new Set(R.filter((r) => r.pkey && daysAgo(r.updated_at) <= 30).map((r) => r.pkey)).size;
-  const atoms = {};
-  for (const r of R) for (const a of r.atoms) { const t = parseAtom(a).type; atoms[t] = (atoms[t] || 0) + 1; }
-  const atomTotal = Object.values(atoms).reduce((a, b) => a + b, 0);
-  const atomNote = Object.entries(atoms).filter(([t]) => t !== "fact" && ATOM[t]).sort((a, b) => b[1] - a[1]).slice(0, 3)
-    .map(([t, c]) => words(c, ATOM[t])).join(", ");
-  const pct = R.length ? Math.round(((R.length - pending) / R.length) * 100) : 0;
-  const bySource = SRC.filter((s) => s.count).map((s) => `${esc(s.title)} ${n(s.count)}`).join(", ");
-  const cardsNote = failed ? `${words(failed, ["запись", "записи", "записей"])} не удалось пересказать`
-    : pending ? `${words(pending, RECORD_FORMS)} ждут пересказа` : "очередь пересказа пуста";
-  const tiles = [
-    ["Записей", n(R.length), R.length ? `${n(active7)} активных за 7 дней. ${bySource}` : "Запусти <code>brain sync</code>, чтобы забрать первые"],
-    ["Проектов", n(keys.length), `${n(live30)} живых за 30 дней`],
-    ["Знаний", n(atomTotal), atomTotal ? atomNote || "только факты" : "появятся в карточках после пересказа"],
-    ["Карточки", `${pct}%`, cardsNote, pct],
+const PROJECT_FORMS = ["проект", "проекта", "проектов"];
+// Счётчики базы одной строкой; отдельный блок появляется, только когда что-то сломалось.
+function baseLine() {
+  const last = date(st.last_sync_at);
+  let atoms = 0;
+  for (const r of R) atoms += r.atoms.length;
+  const parts = [
+    words(R.length, RECORD_FORMS),
+    words(Object.keys(PROJECTS).filter(Boolean).length, PROJECT_FORMS),
+    words(atoms, ["знание", "знания", "знаний"]),
+    last ? `синхронизация ${ago(last)}` : "синхронизации ещё не было",
   ];
-  $("#kpis").innerHTML = tiles.map(([label, value, note, bar]) => `
-    <div class="card kpi">
-      <p class="label" style="margin:0">${label}</p>
-      <p class="value">${value}</p>
-      <p class="note">${note}</p>
-      ${bar !== undefined ? `<div class="meter" role="progressbar" aria-label="Записи с карточкой" aria-valuenow="${bar}" aria-valuemin="0" aria-valuemax="100"><span style="width:${bar}%"></span></div>` : ""}
-    </div>`).join("");
+  if (pending) parts.push(`${words(pending, RECORD_FORMS)} без карточки`);
+  $("#base-line").innerHTML = `${parts.map(esc).join(" · ")} · <a href="#records">Состояние базы</a>`;
+  const bad = [];
+  if (DATA.state === "error") bad.push("Последний прогон упал.");
+  if (DATA.state === "interrupted") bad.push("Последний прогон прервался.");
+  if (syncErrors.length) bad.push(`Ошибки синхронизации: ${syncErrors.map(([src]) => esc(srcName(src))).join(", ")}.`);
+  if (failed) bad.push(`${words(failed, RECORD_FORMS)} не удалось пересказать.`);
+  const alert = $("#base-alert");
+  alert.hidden = !bad.length;
+  alert.innerHTML = bad.length ? `${bad.join(" ")} <a href="#records">Подробности</a>` : "";
+}
+const WEEK_DAYS = 7;
+function weekProjects() {
+  const recent = R.filter((r) => daysAgo(r.updated_at) <= WEEK_DAYS);
+  const by = new Map();
+  for (const r of recent) if (r.pkey) (by.get(r.pkey) || by.set(r.pkey, []).get(r.pkey)).push(r);
+  $("#week-sub").textContent = recent.length
+    ? `${words(recent.length, RECORD_FORMS)} за ${WEEK_DAYS} дней, ${words(by.size, PROJECT_FORMS)}`
+    : `За ${WEEK_DAYS} дней записей не было`;
+  const rows = [...by].sort((a, b) => b[1].length - a[1].length).slice(0, 7);
+  const max = rows.length ? rows[0][1].length : 1;
+  $("#week-projects").innerHTML = rows.map(([key, list]) => `
+    <a class="wrow" href="#project/${encodeURIComponent(key)}">
+      <span><span class="t">${esc(projName(key))}</span><span class="m">${esc(list[0].title)}</span></span>
+      <span class="wbar" aria-hidden="true"><i style="width:${Math.max(6, Math.round((list.length / max) * 100))}%"></i></span>
+      <span class="d">${n(list.length)}</span>
+    </a>`).join("") || empty(R.length ? "Тихая неделя" : "Проектов пока нет", R.length ? `Все проекты — на вкладке <a href="#projects">«Проекты»</a>.` : "Они появятся вместе с первыми записями.");
+  // Темы недели: чем чаще тема в свежих карточках, тем раньше.
+  const counts = new Map();
+  for (const r of recent.length ? recent : R.slice(0, 40)) for (const t of r.topics) counts.set(t, (counts.get(t) || 0) + 1);
+  const top = [...counts].sort((a, b) => b[1] - a[1]).slice(0, 8);
+  $("#quick").innerHTML = top.length
+    ? `<span class="quick-label">Темы недели</span>${top.map(([t]) => `<button class="chip" type="button" data-q="${esc(t)}">${esc(t)}</button>`).join("")}<a class="link" href="#topics">все темы</a>` : "";
+}
+function fresh() {
+  const groups = [];
+  for (const r of R.slice(0, 10)) {
+    const label = dayLabel(date(r.updated_at));
+    if (!groups.length || groups[groups.length - 1].label !== label) groups.push({ label, list: [] });
+    groups[groups.length - 1].list.push(r);
+  }
+  $("#fresh").innerHTML = groups.map((g) => `<p class="label">${esc(g.label)}</p><div class="fresh">${g.list.map((r) => `
+    <button type="button" data-id="${r.id}">
+      <span class="dot" style="background:${color(r.source)}" title="${esc(srcName(r.source))}"></span>
+      <span><span class="t">${esc(r.title)}</span><span class="m">${esc(srcName(r.source))}, ${esc(projName(r.pkey))}</span></span>
+      <span class="d">${esc(clock(date(r.updated_at)))}</span>
+    </button>`).join("")}</div>`).join("") || empty("Записей пока нет", "Запусти <code>brain sync</code>.");
 }
 function weeklyBuckets() {
   const series = SRC.map((s) => ({ key: s.source, title: esc(s.title), color: color(s.source) }));
@@ -304,30 +548,15 @@ function projectCounts() {
   for (const r of R) if (r.pkey) c[r.pkey] = (c[r.pkey] || 0) + 1;
   return c;
 }
-function topProjects() {
-  const c = projectCounts();
-  const rows = Object.entries(c).sort((a, b) => b[1] - a[1]).slice(0, 8)
-    .map(([key, value]) => ({ key, value, label: esc(projName(key)), title: esc(PROJECTS[key].paths.join(", ")) }));
-  if (!rows.length) { $("#top-projects").innerHTML = empty("Проектов пока нет", "Они появятся вместе с первыми записями."); return; }
-  Charts.hbars($("#top-projects"), rows, (r) => go(`#project/${encodeURIComponent(r.key)}`));
-}
-function fresh() {
-  $("#fresh").innerHTML = R.slice(0, 6).map((r) => `
-    <button type="button" data-id="${r.id}">
-      <span class="dot" style="background:${color(r.source)}" title="${esc(srcName(r.source))}"></span>
-      <span><span class="t">${esc(r.title)}</span><span class="m">${esc(srcName(r.source))}, ${esc(projName(r.pkey))}</span></span>
-      <span class="d">${esc(dayMonth(date(r.updated_at)))}</span>
-    </button>`).join("") || empty("Записей пока нет", "Запусти <code>brain sync</code>.");
-}
-
 // ---- 02 Граф
 let graph = null;
 const PREFS_KEY = "brain.graph.prefs";
-const gf = { sources: new Set(SRC.map((s) => s.source)), period: "all", q: "", hits: [], at: -1 };
-const gv = { topic: true, minW: 0, areas: true, labels: "less" };
+// open — проект, раскрытый на карте проектов; ok — записи, прошедшие фильтры периода и источников.
+const gf = { sources: new Set(SRC.map((s) => s.source)), period: "all", q: "", hits: [], at: -1, open: null, ok: new Set() };
+// mode: "map" — карта проектов (записи появляются у раскрытого проекта), "all" — все записи сразу.
+const gv = { topic: true, minW: 0, areas: true, labels: "less", mode: "map" };
 try { Object.assign(gv, JSON.parse(localStorage.getItem(PREFS_KEY)) || {}); } catch { /* настройки по умолчанию */ }
 const savePrefs = () => { try { localStorage.setItem(PREFS_KEY, JSON.stringify(gv)); } catch { /* не запомним */ } };
-const PCOUNT = projectCounts();
 // Кольцо есть только у проекта из двух записей и больше: проект из одной записи — это сама запись.
 const hubId = (key) => (PCOUNT[key] >= 2 ? "p:" + key : null);
 const nodeId = (v) => (/^\d+$/.test(v) ? +v : v);
@@ -342,6 +571,17 @@ for (const [a, b] of DATA.graph?.edges || []) {
     m.set(y, (m.get(y) || 0) + 1);
   }
 }
+// Мосты карты проектов: у каждого проекта остаются только самые сильные соседи, иначе карта снова станет клубком.
+const BRIDGES = [];
+{
+  const strongest = new Map();
+  for (const [key, m] of PLINKS) {
+    if (hubId(key)) strongest.set(key, new Set([...m].filter(([k]) => hubId(k)).sort((a, b) => b[1] - a[1]).slice(0, 4).map(([k]) => k)));
+  }
+  for (const [a, m] of PLINKS) for (const [b, w] of m) {
+    if (a < b && strongest.has(a) && strongest.has(b) && (strongest.get(a).has(b) || strongest.get(b).has(a))) BRIDGES.push([a, b, w]);
+  }
+}
 
 function renderGraph(arg) {
   if (!graph) initGraph();
@@ -352,20 +592,24 @@ function renderGraph(arg) {
     if (arg && graph.has(id) && graph.selected()?.id !== id) showOnGraph(id);
   });
 }
-// Выбрать узел и долететь до него. Запись, скрытую фильтрами, показываем со сброшенными фильтрами.
-function showOnGraph(id) {
-  if (!graph.passes(id)) resetGraphFilters();
-  graph.select(id, { fly: true, zoom: 3 });
-}
+// Выбрать узел и долететь до него; настоящая версия появляется вместе с графом.
+let showOnGraph = () => {};
+// Подсветить на графе всё, что находится по слову (тему): до первого открытия графа запрос ждёт в gf.q.
+let graphFind = null;
+function findOnGraph(text) { gf.q = text; if (graphFind) graphFind(); go("#graph"); }
+document.addEventListener("click", (e) => { const b = e.target.closest("[data-gfind]"); if (b) findOnGraph(b.dataset.gfind); });
 let resetGraphFilters = () => {};
+const popovers = [];
+const closePopovers = () => { let was = false; for (const p of popovers) was = p.close() || was; return was; };
 
 function initGraph() {
   const box = $(".graph-box");
   if (!R.length) {
+    if (box.querySelector(".graph-empty")) return;
     box.insertAdjacentHTML("beforeend", `<div class="graph-empty">${empty("Граф пока пустой", "Запусти <code>brain sync</code>: записи соберутся вокруг своих проектов.")}</div>`);
     $("#graph-sub").textContent = "";
     $(".graph-tools").hidden = true;
-    $(".graph-legend").hidden = true;
+    $("#graph-controls").hidden = true;
     return;
   }
   const logMin = Math.log(500), logMax = Math.log(80000);
@@ -378,26 +622,48 @@ function initGraph() {
   }
   const links = R.filter((r) => hubId(r.pkey)).map((r) => ({ s: r.id, t: hubId(r.pkey), w: 1, kind: "project" }));
   for (const [a, b, w] of DATA.graph.edges) if (byId.has(a) && byId.has(b)) links.push({ s: a, t: b, w, kind: "topic" });
+  for (const [a, b, w] of BRIDGES) links.push({ s: hubId(a), t: hubId(b), w, kind: "bridge" });
   const topicCount = TOPIC_W.length;
   const summary = `${words(R.length, RECORD_FORMS)}, ${words(Object.keys(PCOUNT).length, ["проект", "проекта", "проектов"])}, ${words(topicCount, ["связь", "связи", "связей"])} по темам`;
-  $("#graph-sub").textContent = `${summary}. Кольца — проекты, точки — записи, линии — общие темы из карточек. Выбери точку, и останутся видны только её связи.`;
+  $("#graph-sub").textContent = `${summary}. Крупные узлы — проекты, малые — записи, линии — общие темы из карточек.`;
   const canvas = $("#graph");
   canvas.setAttribute("aria-label", `Граф: ${summary}. Те же записи списком на вкладках «Проекты» и «Записи».`);
 
   const c = $("#graph-controls");
   c.innerHTML = `
-    ${SRC.filter((s) => s.count).map((s) => `<button class="chip" type="button" data-src="${esc(s.source)}" aria-pressed="true">
-      <span class="dot" style="background:${color(s.source)}"></span>${esc(s.title)} <span class="num">${n(s.count)}</span></button>`).join("")}
-    <div class="seg" id="g-period" role="group" aria-label="Период"></div>
     <div class="graph-search">
       <input type="search" id="g-q" placeholder="Найти на графе" aria-label="Найти на графе" aria-describedby="g-found" autocomplete="off">
       <span class="graph-found" id="g-found" aria-live="polite"></span>
+    </div>
+    <div class="seg" id="g-mode" role="group" aria-label="Что показывать"></div>
+    <div class="graph-filter">
+      <button class="gbtn" type="button" id="gf-btn" aria-expanded="false" aria-controls="graph-filters">Фильтры<span id="gf-count"></span></button>
+      <div class="graph-pop" id="graph-filters" hidden>
+        <p class="label">Период</p>
+        <div class="seg" id="g-period" role="group" aria-label="Период"></div>
+        <p class="label">Источники</p>
+        <div class="chips">${SRC.filter((s) => s.count).map((s) => `<button class="chip" type="button" data-src="${esc(s.source)}" aria-pressed="true">
+          <span class="dot" style="background:${color(s.source)}"></span>${esc(s.title)} <span class="num">${n(s.count)}</span></button>`).join("")}</div>
+      </div>
     </div>`;
+  // Карта проектов есть только в 3D: в запасном 2D-графе показываем все записи, как раньше.
+  const mapMode = () => canvas.dataset.graphMode === "3d" && gv.mode === "map";
+  const computeOk = () => {
+    const maxDays = gf.period === "all" ? Infinity : +gf.period;
+    gf.ok = new Set(R.filter((r) => gf.sources.has(r.source) && daysAgo(r.updated_at) <= maxDays).map((r) => r.id));
+    gf.live = new Set(R.filter((r) => gf.ok.has(r.id)).map((r) => r.pkey));
+  };
+  const nodeFilter = (node) => {
+    if (node.kind !== "record") return gf.live.has(node.pkey);
+    if (!gf.ok.has(node.id)) return false;
+    return !mapMode() || !!graph?.isLocal() || node.pkey === gf.open;
+  };
+  computeOk();
   if (!topicCount) gv.topic = false;
 
   const panel = $("#graph-panel");
-  graph = createGraph(canvas, {
-    nodes, links, prefs: gv,
+  graph = createDashboardGraph(canvas, {
+    nodes, links, prefs: gv, filter: nodeFilter,
     // Панель выбранного закрывает часть холста: вписываем и центрируем граф в оставшееся место.
     inset() {
       if (panel.hidden) return {};
@@ -407,7 +673,14 @@ function initGraph() {
     onOpen(node) { if (node.kind === "record") openRecord(node.id); else go(`#project/${encodeURIComponent(node.pkey)}`); },
     onSelect(node) {
       Charts.tip.hide();
+      // На карте проектов выбор узла раскрывает его проект, снятие выбора сворачивает.
+      if (mapMode() && !graph.isLocal()) {
+        const key = node ? (hubId(node.pkey) ? node.pkey : gf.open) : null;
+        // Свернули проект — возвращаемся к общему виду карты, а не остаёмся носом в пустом месте.
+        if (key !== gf.open) { gf.open = key; apply(!key); }
+      }
       renderPanel(node);
+      hint();
       const hash = node ? `#graph/${encodeURIComponent(node.id)}` : "#graph";
       if (location.hash !== hash && current?.tab === "graph") {
         history.replaceState(null, "", hash);
@@ -425,21 +698,49 @@ function initGraph() {
     },
   });
 
-  // Фильтры над графом
+  // Поиск и фильтры поверх графа
   const search = () => {
     const q = terms(gf.q), found = $("#g-found");
     gf.at = -1;
     if (!q.length) { gf.hits = []; graph.highlight(null); found.textContent = ""; return; }
-    gf.hits = R.filter((r) => graph.passes(r.id) && matchAll(r, q)).map((r) => r.id);
-    graph.highlight(gf.hits.length ? new Set(gf.hits) : new Set([-1]));
+    gf.hits = R.filter((r) => gf.ok.has(r.id) && matchAll(r, q)).map((r) => r.id);
+    const mark = new Set(gf.hits);
+    // На карте записи свёрнуты в проекты: подсвечиваем проекты, где есть найденное.
+    if (mapMode()) for (const id of gf.hits) { const hub = hubId(byId.get(id).pkey); if (hub) mark.add(hub); }
+    graph.highlight(mark.size ? mark : new Set([-1]));
     found.textContent = gf.hits.length ? `${words(gf.hits.length, RECORD_FORMS)}, Enter — к следующей` : "ничего не нашлось";
   };
   const apply = (refit) => {
-    const maxDays = gf.period === "all" ? Infinity : +gf.period;
-    const ok = new Set(R.filter((r) => gf.sources.has(r.source) && daysAgo(r.updated_at) <= maxDays).map((r) => r.id));
-    const liveProjects = new Set(R.filter((r) => ok.has(r.id)).map((r) => r.pkey));
-    graph.setFilter((node) => (node.kind === "record" ? ok.has(node.id) : liveProjects.has(node.pkey)), refit);
+    computeOk();
+    graph.setFilter(nodeFilter, refit);
     search();
+    const changed = (gf.period !== "all") + (gf.sources.size < SRC.length);
+    $("#gf-count").textContent = changed ? ` · ${changed}` : "";
+  };
+  const hint = () => {
+    $("#graph-hint").textContent = graph.selected() ? ""
+      : mapMode() ? "Клик по проекту раскрывает его записи" : "Клик выбирает узел, второй клик открывает";
+  };
+  const setMode = (mode) => {
+    gv.mode = mode;
+    savePrefs();
+    $("#g-mode").querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", b.dataset.v === mode));
+    const sel = graph.selected();
+    gf.open = mode === "map" && sel && hubId(sel.pkey) ? sel.pkey : null;
+    graph.setPrefs(gv);
+    apply(true);
+    hint();
+  };
+  seg($("#g-mode"), [["map", "Проекты"], ["all", "Все записи"]], mapMode() ? "map" : "all", setMode);
+  $("#g-mode").hidden = canvas.dataset.graphMode !== "3d";
+  showOnGraph = (id) => {
+    const rec = typeof id === "number" ? byId.get(id) : null;
+    if (rec ? !gf.ok.has(id) : !graph.passes(id)) resetGraphFilters();
+    if (rec && mapMode() && !graph.isLocal()) {
+      if (!hubId(rec.pkey)) setMode("all");
+      else if (gf.open !== rec.pkey) { gf.open = rec.pkey; apply(false); }
+    }
+    graph.select(id, { fly: true, zoom: 3 });
   };
   c.addEventListener("click", (e) => {
     const chip = e.target.closest(".chip");
@@ -459,12 +760,14 @@ function initGraph() {
   };
   const q = $("#g-q");
   q.addEventListener("input", () => { gf.q = q.value; search(); });
+  graphFind = () => { q.value = gf.q; search(); };
+  if (gf.q) graphFind();
   q.addEventListener("keydown", (e) => {
     if (e.key === "Escape" && q.value) { q.value = gf.q = ""; search(); e.stopPropagation(); return; }
     if (e.key !== "Enter" || !gf.hits.length) return;
     e.preventDefault();
     gf.at = (gf.at + (e.shiftKey ? -1 : 1) + gf.hits.length) % gf.hits.length;
-    graph.select(gf.hits[gf.at], { fly: true, zoom: 3 });
+    showOnGraph(gf.hits[gf.at]);
     $("#g-found").textContent = `${n(gf.at + 1)} из ${words(gf.hits.length, RECORD_FORMS)}, Shift+Enter — назад`;
   });
 
@@ -480,11 +783,20 @@ function initGraph() {
   new ResizeObserver(() => {
     if (!rz) rz = requestAnimationFrame(() => { rz = 0; if (current?.tab === "graph") graph.resize(); });
   }).observe(box);
-  const vbtn = $("#gv-btn"), vpanel = $("#graph-view");
-  const showView = (open) => { vpanel.hidden = !open; vbtn.setAttribute("aria-expanded", open); };
-  vbtn.addEventListener("click", () => showView(vpanel.hidden));
-  document.addEventListener("pointerdown", (e) => { if (!vpanel.hidden && !e.target.closest(".graph-tools")) showView(false); });
-  vpanel.addEventListener("keydown", (e) => { if (e.key === "Escape") { showView(false); vbtn.focus(); e.stopPropagation(); } });
+  const popover = (btn, panel) => {
+    const show = (open) => { panel.hidden = !open; btn.setAttribute("aria-expanded", open); };
+    const p = { btn, panel, show, close() { if (panel.hidden) return false; show(false); return true; } };
+    btn.addEventListener("click", () => { const open = panel.hidden; closePopovers(); show(open); });
+    panel.addEventListener("keydown", (e) => { if (e.key === "Escape") { show(false); btn.focus(); e.stopPropagation(); } });
+    popovers.push(p);
+    return p;
+  };
+  const viewPop = popover($("#gv-btn"), $("#graph-view"));
+  popover($("#gf-btn"), $("#graph-filters"));
+  popover($("#gh-btn"), $("#graph-info"));
+  document.addEventListener("pointerdown", (e) => {
+    for (const p of popovers) if (!p.panel.hidden && !p.panel.contains(e.target) && !p.btn.contains(e.target)) p.show(false);
+  });
   const topicBox = $("#gv-topic"), minw = $("#gv-minw"), areas = $("#gv-areas");
   topicBox.checked = gv.topic;
   topicBox.disabled = !topicCount;
@@ -503,7 +815,7 @@ function initGraph() {
   minw.addEventListener("input", () => { gv.minW = +minw.value; updateView(); });
   areas.addEventListener("change", () => { gv.areas = areas.checked; updateView(); });
   seg($("#gv-labels"), [["less", "Меньше"], ["more", "Больше"]], gv.labels, (v) => { gv.labels = v; updateView(); });
-  $("#gv-relayout").addEventListener("click", () => { graph.relayout(); showView(false); });
+  $("#gv-relayout").addEventListener("click", () => { graph.relayout(); viewPop.show(false); });
   updateView();
 
   // Панель выбранного
@@ -521,11 +833,31 @@ function initGraph() {
     if (t.closest(".gp-close")) graph.select(null);
   });
   apply(false);
+  hint();
 }
 
 // ---- Панель выбранного узла
 const gpItem = (x, note) => `<li><button type="button" data-gsel="${x.id}"><span class="dot" style="background:${color(x.source)}"></span><span class="t">${esc(x.title)}</span><span class="m">${note}</span></button></li>`;
-const topicTags = (list) => (list.length ? `<div class="topics">${list.map((t) => `<span class="tag topic">${esc(t)}</span>`).join("")}</div>` : "");
+const topicHref = (t) => `#topic/${encodeURIComponent(t)}`;
+const topicTags = (list) => (list.length ? `<div class="topics">${list.map((t) => `<a class="tag topic" href="${topicHref(t)}">${esc(t)}</a>`).join("")}</div>` : "");
+// Почему два проекта связаны: темы, общие для пар их записей, соединённых на графе.
+const SHARED = new Map();
+function sharedTopics(a, b) {
+  const id = a < b ? `${a}\n${b}` : `${b}\n${a}`;
+  if (SHARED.has(id)) return SHARED.get(id);
+  const count = new Map();
+  for (const [x, y] of DATA.graph?.edges || []) {
+    const rx = byId.get(x), ry = byId.get(y);
+    if (!rx || !ry || !((rx.pkey === a && ry.pkey === b) || (rx.pkey === b && ry.pkey === a))) continue;
+    const mine = new Set(rx.topics);
+    for (const t of ry.topics) if (mine.has(t)) count.set(t, (count.get(t) || 0) + 1);
+  }
+  const top = [...count].sort((p, q) => q[1] - p[1]).slice(0, 3).map(([t]) => t);
+  SHARED.set(id, top);
+  return top;
+}
+const LINK_FORMS = ["связь", "связи", "связей"];
+const related = (key, limit) => [...(PLINKS.get(key) || new Map())].sort((a, b) => b[1] - a[1]).slice(0, limit);
 function panelHead(label) {
   return `<div class="gp-head"><p class="label">${label}</p>
     <button class="gp-close" type="button" aria-label="Снять выбор" title="Снять выбор (Esc)">
@@ -558,8 +890,8 @@ function panelRecord(r) {
 }
 function panelProject(key) {
   const meta = PROJECTS[key], recs = R.filter((r) => r.pkey === key);
-  const rel = [...(PLINKS.get(key) || new Map())].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([k, cnt]) =>
-    `<li><button type="button" class="nodot" data-gsel="${esc(hubId(k) || R.find((r) => r.pkey === k).id)}"><span class="t">${esc(projName(k))}</span><span class="m">${words(cnt, ["общая связь", "общие связи", "общих связей"])}</span></button></li>`);
+  const rel = related(key, 5).map(([k, cnt]) =>
+    `<li><button type="button" class="nodot" data-gsel="${esc(hubId(k) || R.find((r) => r.pkey === k).id)}"><span class="t">${esc(projName(k))}</span><span class="m wrap">${esc([words(cnt, LINK_FORMS), sharedTopics(key, k).join(", ")].filter(Boolean).join(" · "))}</span></button></li>`);
   return `
     ${panelHead(`Проект, ${words(recs.length, RECORD_FORMS)}`)}
     <h2 class="gp-title">${esc(meta.name)}</h2>
@@ -593,7 +925,7 @@ addEventListener("keydown", (e) => {
   else if (k === "ArrowRight") graph.pan(-step, 0);
   else if (k === "ArrowUp") graph.pan(0, step);
   else if (k === "ArrowDown") graph.pan(0, -step);
-  else if (k === "Escape" && !$("#graph-view").hidden) $("#gv-btn").click();
+  else if (k === "Escape" && closePopovers()) { /* закрыли выпадающую панель */ }
   else if (k === "Escape" && graph.isLocal()) { graph.setLocal(false); renderPanel(graph.selected()); }
   else if (k === "Escape" && graph.selected()) graph.select(null);
   else if (k === "Escape" && graphFull()) setGraphFull(false);
@@ -686,7 +1018,7 @@ function shareOf(records) {
 function drawGrid(list) {
   const q = terms(pq);
   const shown = list
-    .filter((p) => !q.length || q.every((w) => (projName(p.key) + " " + PROJECTS[p.key].paths.join(" ")).toLowerCase().includes(w)))
+    .filter((p) => !q.length || q.every((w) => nrm(projName(p.key) + " " + PROJECTS[p.key].paths.join(" ")).includes(w)))
     .sort(psort === "size" ? (a, b) => b.records.length - a.records.length || (b.last > a.last ? 1 : -1) : (a, b) => (b.last > a.last ? 1 : -1));
   $("#pgrid").innerHTML = shown.map((p) => {
     const meta = PROJECTS[p.key];
@@ -732,13 +1064,20 @@ function showProject(key) {
       <div class="card"><p class="label" style="margin:0">Когда</p><p class="value" style="font-size:24px">${esc(dayMonth(date(first.updated_at)))} – ${esc(dayMonth(date(last.updated_at)))}</p>
         <p class="note">первая и последняя запись</p></div>
     </div>
-    ${meta.topics.length ? `<div class="topics">${meta.topics.map((t) => `<span class="tag topic">${esc(t)}</span>`).join("")}</div>` : ""}
+    ${topicTags(meta.topics)}
+    ${related(key, 6).length ? `<div class="card">
+      <h2 class="card-title">Связанные проекты</h2>
+      <p class="card-sub">У их записей общие темы с записями этого проекта</p>
+      <ul class="rel">${related(key, 6).map(([k, cnt]) => `<li><a class="t" href="#project/${encodeURIComponent(k)}">${esc(projName(k))}</a>
+        <span class="mono">${words(cnt, LINK_FORMS)}</span>${topicTags(sharedTopics(key, k))}</li>`).join("")}</ul>
+    </div>` : ""}
     <div class="card">
       <h2 class="card-title">Решения и задачи</h2>
       <p class="card-sub">Последние из карточек этого проекта</p>
       ${atoms.length ? `<ul class="atoms">${atoms.slice(0, 10).map((a) => `<li><span class="tag ${a.type === "todo" ? "wait" : ""}">${a.type === "todo" ? "задача" : "решение"}</span>${esc(a.text)}
         <button class="from" type="button" data-id="${a.r.id}">${esc(dayMonth(date(a.r.updated_at)))}, ${esc(a.r.title)}</button></li>`).join("")}</ul>`
         : `<p class="muted" style="margin:var(--space-3) 0 0">В карточках этого проекта решений и задач пока нет.</p>`}
+      ${records.some((r) => r.atoms.length) ? `<p class="card-foot"><button class="btn sm" type="button" data-kp="${esc(key)}">Все знания проекта</button></p>` : ""}
     </div>
     <h2 class="card-title section-title">Записи</h2>
     <div class="feed">${[...months.values()].map((m) => `<div class="day"><h3>${esc(monthName(m.d))}</h3><div class="rows">${m.list.map(recordRow).join("")}</div></div>`).join("")}</div>`;
@@ -747,6 +1086,174 @@ function showProject(key) {
 }
 
 // ---- 04 Записи и здоровье базы
+// ---- 04 Темы: тема как отдельная сущность — её записи, проекты, соседние темы
+const allTopics = (r) => r.topics_all || r.topics;
+let TOPICS = null, topicsReady = false, tsort = "size", tq = "";
+function topicIndex() {
+  if (TOPICS) return TOPICS;
+  TOPICS = new Map();
+  for (const r of R) for (const t of allTopics(r)) (TOPICS.get(t) || TOPICS.set(t, []).get(t)).push(r);
+  return TOPICS;
+}
+function renderTopics(arg) {
+  const list = $("#topics-list-view"), view = $("#topic-view");
+  if (arg) { list.hidden = true; view.hidden = false; showTopic(arg); return; }
+  list.hidden = false; view.hidden = true;
+  if (topicsReady) return;
+  topicsReady = true;
+  $("#topics-sub").textContent = topicIndex().size ? "Темы берутся из ключевых слов карточек. По общим темам строятся связи на графе." : "";
+  seg($("#topics-sort"), [["size", "Больше записей"], ["recent", "Недавние"]], tsort, (v) => { tsort = v; drawTopics(); });
+  $("#q-topics").addEventListener("input", (e) => { tq = e.target.value; drawTopics(); });
+  drawTopics();
+}
+function drawTopics() {
+  const q = terms(tq), all = [...topicIndex()];
+  // Тема из одной записи ничего не связывает: без фильтра такие не показываем.
+  const shown = all.filter(([t, rs]) => (q.length ? q.every((w) => nrm(t).includes(w)) : rs.length >= 2))
+    .sort(tsort === "size" ? (a, b) => b[1].length - a[1].length || (b[1][0].updated_at > a[1][0].updated_at ? 1 : -1) : (a, b) => (b[1][0].updated_at > a[1][0].updated_at ? 1 : -1));
+  $("#topics-count").textContent = !all.length ? "" : q.length ? `Найдено ${n(shown.length)} из ${n(all.length)}`
+    : `${words(shown.length, ["тема", "темы", "тем"])} хотя бы из двух записей, всего ${n(all.length)}`;
+  $("#tgrid").innerHTML = shown.slice(0, 400).map(([t, rs]) => `<a class="trow" href="${topicHref(t)}">
+    <span class="t">${hl(t, q)}</span><span class="mono">${esc(dayMonth(date(rs[0].updated_at)))}</span><span class="d">${n(rs.length)}</span></a>`).join("")
+    || empty(all.length ? "Ничего не нашлось" : "Тем пока нет", all.length ? "Попробуй другое слово." : "Они появятся, когда записи получат карточки.");
+}
+function showTopic(name) {
+  const view = $("#topic-view"), records = topicIndex().get(name);
+  if (!records) {
+    view.innerHTML = `<p class="crumb"><a href="#topics">Темы</a></p><h1 class="headline" tabindex="-1">Тема не найдена</h1>
+      <p class="lede">Такой темы в этом снимке базы нет. Вернись к <a href="#topics">списку тем</a>.</p>`;
+    return;
+  }
+  const near = new Map(), projects = new Map();
+  for (const r of records) {
+    for (const t of allTopics(r)) if (t !== name) near.set(t, (near.get(t) || 0) + 1);
+    if (r.pkey) projects.set(r.pkey, (projects.get(r.pkey) || 0) + 1);
+  }
+  const top = (m, k) => [...m].sort((a, b) => b[1] - a[1]).slice(0, k);
+  const atoms = [];
+  for (const r of records) for (const a of r.atoms) { const p = parseAtom(a); if (p.type === "decision" || p.type === "todo") atoms.push({ ...p, r }); }
+  const groups = [];
+  for (const r of records.slice(0, 100)) {
+    const label = dayLabel(date(r.updated_at));
+    if (!groups.length || groups[groups.length - 1].label !== label) groups.push({ label, list: [] });
+    groups[groups.length - 1].list.push(r);
+  }
+  const first = records[records.length - 1], last = records[0];
+  view.innerHTML = `
+    <header class="tab-head">
+      <p class="crumb"><a href="#topics">Темы</a> / ${esc(name)}</p>
+      <h1 class="headline" tabindex="-1">${esc(name)}</h1>
+      <p class="lede">${words(records.length, RECORD_FORMS)}${projects.size ? ` в ${n(projects.size)} ${plural(projects.size, "проекте", "проектах", "проектах")}` : ""}, ${esc(dayMonth(date(first.updated_at)))} – ${esc(dayMonth(date(last.updated_at)))}</p>
+      <p class="t-actions"><button class="btn sm" type="button" data-gfind="${esc(name)}">Показать на графе</button></p>
+    </header>
+    <div class="split">
+      <div class="card">
+        <h2 class="card-title">Проекты</h2>
+        <p class="card-sub">Где эта тема встречается</p>
+        ${projects.size ? `<div class="fresh">${top(projects, 8).map(([k, c]) => `<a class="wrow two" href="#project/${encodeURIComponent(k)}"><span class="t">${esc(projName(k))}</span><span class="d">${n(c)}</span></a>`).join("")}</div>`
+          : `<p class="muted" style="margin:var(--space-3) 0 0">Записи с этой темой не привязаны к проектам.</p>`}
+      </div>
+      <div class="card">
+        <h2 class="card-title">Соседние темы</h2>
+        <p class="card-sub">Чаще всего стоят рядом в одних и тех же записях</p>
+        ${near.size ? `<div class="topics" style="margin-top:var(--space-3)">${top(near, 14).map(([t, c]) => `<a class="tag topic" href="${topicHref(t)}">${esc(t)} <span class="num">${n(c)}</span></a>`).join("")}</div>`
+          : `<p class="muted" style="margin:var(--space-3) 0 0">Других тем в этих записях нет.</p>`}
+      </div>
+    </div>
+    ${atoms.length ? `<div class="card">
+      <h2 class="card-title">Решения и задачи</h2>
+      <p class="card-sub">Последние из записей с этой темой</p>
+      <ul class="atoms">${atoms.slice(0, 10).map((a) => `<li><span class="tag ${a.type === "todo" ? "wait" : ""}">${a.type === "todo" ? "задача" : "решение"}</span>${esc(a.text)}
+        <button class="from" type="button" data-id="${a.r.id}">${esc(dayMonth(date(a.r.updated_at)))}, ${esc(a.r.title)}</button></li>`).join("")}</ul>
+    </div>` : ""}
+    <h2 class="card-title section-title">Записи</h2>
+    <div class="feed">${groups.map((g) => `<div class="day"><h3>${esc(g.label)}</h3><div class="rows">${g.list.map((r) => recordRow(r)).join("")}</div></div>`).join("")}</div>
+    ${records.length > 100 ? `<p class="count" style="margin-top:var(--space-3)">Показаны последние 100 из ${n(records.length)}.</p>` : ""}`;
+}
+
+// ---- 05 Знания: все решения, задачи, команды и прочее из карточек одной лентой
+const K_LIMIT = 60;
+const kf = { type: "all", pkey: "", days: 0, q: "", limit: K_LIMIT };
+let knowledgeReady = false;
+function showKnowledge(f) {
+  Object.assign(kf, { type: "all", pkey: "", days: 0, q: "", limit: K_LIMIT }, f);
+  go("#knowledge");
+}
+document.addEventListener("click", (e) => { const b = e.target.closest("[data-kp]"); if (b) showKnowledge({ pkey: b.dataset.kp }); });
+function knowledge() {
+  const q = terms(kf.q), groups = [];
+  let total = 0;
+  for (const r of R) {
+    if (kf.pkey && r.pkey !== kf.pkey) continue;
+    if (kf.days && daysAgo(r.updated_at) > kf.days) continue;
+    const x = index().get(r.id);
+    let list = kf.type === "all" ? x.atoms : x.atoms.filter((a) => a.type === kf.type);
+    // Слова из названия и проекта задают контекст, остальные должны быть в самом знании.
+    const own = q.filter((w) => !x.head.includes(w));
+    if (own.length) list = list.filter((a) => own.every((w) => a.n.includes(w)));
+    if (list.length) { groups.push({ r, list }); total += list.length; }
+  }
+  return { groups, total, q };
+}
+const atomLabel = (type) => ATOM[type]?.[0] || "знание";
+function knowledgeTitle() {
+  return [kf.type === "all" ? "Знания" : ATOM_TITLE[kf.type] || kf.type, kf.pkey && `проект ${projName(kf.pkey)}`,
+    kf.days && `за ${words(kf.days, ["день", "дня", "дней"])}`, kf.q.trim() && `«${kf.q.trim()}»`].filter(Boolean).join(" · ");
+}
+function knowledgeMarkdown() {
+  const { groups } = knowledge();
+  return `# ${knowledgeTitle()}\n\n` + groups.map(({ r, list }) =>
+    `## ${r.title}\n${projName(r.pkey)}, ${fullDate(date(r.updated_at))}${/^https?:/.test(r.location || "") ? `, ${r.location}` : ""}\n\n${list.map((a) => `- **${atomLabel(a.type)}:** ${a.text}`).join("\n")}`).join("\n\n") + "\n";
+}
+function drawKnowledge() {
+  const { groups, total, q } = knowledge();
+  $("#k-count").textContent = total
+    ? `${words(total, ["знание", "знания", "знаний"])} в ${n(groups.length)} ${plural(groups.length, "записи", "записях", "записях")}, свежие сверху` : "";
+  $("#k-copy").hidden = !total;
+  if (!total) {
+    $("#k-feed").innerHTML = empty(R.length ? "Ничего не нашлось" : "Знаний пока нет", R.length ? "Попробуй другое слово или сбрось фильтры." : "Они появятся, когда записи получат карточки.");
+    return;
+  }
+  $("#k-feed").innerHTML = groups.slice(0, kf.limit).map(({ r, list }) => `<article class="kgroup">
+    <button class="khead" type="button" data-id="${r.id}">
+      <span class="dot" style="background:${color(r.source)}" title="${esc(srcName(r.source))}"></span>
+      <span class="t">${hl(r.title, q)}</span>
+      <span class="mono">${esc(projName(r.pkey))} · ${esc(dayMonth(date(r.updated_at)))}</span>
+    </button>
+    <ul class="klist">${list.map((a) => `<li><span class="tag ${a.type === "todo" ? "wait" : ""}">${esc(atomLabel(a.type))}</span><span class="x">${hl(a.text, q)}</span>${copyBtn(a.text)}</li>`).join("")}</ul>
+  </article>`).join("")
+    + (groups.length > kf.limit ? `<button class="more" type="button">Показать ещё ${n(Math.min(K_LIMIT, groups.length - kf.limit))}</button>` : "");
+}
+function renderKnowledge() {
+  const press = (id, v) => $(id).querySelectorAll("button").forEach((b) => b.setAttribute("aria-pressed", b.dataset.v === String(v)));
+  if (!knowledgeReady) {
+    knowledgeReady = true;
+    const counts = {};
+    let all = 0;
+    for (const r of R) for (const a of r.atoms) { const t = parseAtom(a).type; counts[t] = (counts[t] || 0) + 1; all++; }
+    $("#k-sub").textContent = all ? "Всё, что модель вынесла из записей: решения, задачи, исправления, команды. Клик по записи открывает её карточку." : "";
+    const change = () => { kf.limit = K_LIMIT; drawKnowledge(); };
+    seg($("#k-type"), [["all", `Все ${n(all)}`], ...Object.keys(ATOM_TITLE).filter((t) => counts[t]).map((t) => [t, `${ATOM_TITLE[t]} ${n(counts[t])}`])], kf.type, (v) => { kf.type = v; change(); });
+    seg($("#k-period"), [["0", "Всё время"], ["7", "Неделя"], ["30", "Месяц"], ["365", "Год"]], String(kf.days), (v) => { kf.days = +v; change(); });
+    const withAtoms = new Set(R.filter((r) => r.atoms.length && r.pkey).map((r) => r.pkey));
+    $("#k-project").innerHTML = `<option value="">Все проекты</option>` + [...withAtoms].sort((a, b) => PCOUNT[b] - PCOUNT[a])
+      .map((k) => `<option value="${esc(k)}">${esc(projName(k))}</option>`).join("");
+    $("#k-project").addEventListener("change", (e) => { kf.pkey = e.target.value; change(); });
+    $("#q-knowledge").addEventListener("input", (e) => { kf.q = e.target.value; change(); });
+    $("#k-copy").addEventListener("click", (e) => { e.currentTarget.dataset.copy = knowledgeMarkdown(); copyText(e.currentTarget); });
+    $("#k-feed").addEventListener("click", (e) => {
+      const copy = e.target.closest("[data-copy]");
+      if (copy) return copyText(copy);
+      if (e.target.closest(".more")) { kf.limit += K_LIMIT; drawKnowledge(); }
+    });
+  }
+  // Сюда приходят и с готовым фильтром, например со страницы проекта.
+  press("#k-type", kf.type); press("#k-period", kf.days);
+  $("#k-project").value = kf.pkey;
+  $("#q-knowledge").value = kf.q;
+  drawKnowledge();
+}
+
 let recordsReady = false;
 const rf = { q: "", source: "all", status: "all", limit: 100 };
 function renderRecords() {
@@ -789,7 +1296,7 @@ function feedMatches(r) {
   if (rf.status === "wait" && (r.card || r.error)) return false;
   if (rf.status === "err" && (r.card || !r.error)) return false;
   const q = terms(rf.q);
-  return !q.length || matchAll(r, q);
+  return !q.length || matchDeep(r, q);
 }
 function dayLabel(d) {
   const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -800,7 +1307,7 @@ function dayLabel(d) {
   return d.toLocaleDateString("ru-RU", { day: "numeric", month: "long", ...(d.getFullYear() !== thisYear && { year: "numeric" }) }).replace(" г.", "");
 }
 function drawFeed() {
-  const list = R.filter(feedMatches);
+  const list = R.filter(feedMatches), q = terms(rf.q);
   $("#count").textContent = list.length === R.length ? `Все ${words(R.length, RECORD_FORMS)}, свежие сверху` : `Найдено ${n(list.length)} из ${n(R.length)}`;
   if (!list.length) {
     $("#feed").innerHTML = empty(R.length ? "Ничего не нашлось" : "Записей пока нет", R.length ? "Попробуй другое слово или сбрось фильтры." : "Запусти <code>brain sync</code>.");
@@ -812,65 +1319,209 @@ function drawFeed() {
     if (!groups.length || groups[groups.length - 1].label !== label) groups.push({ label, list: [] });
     groups[groups.length - 1].list.push(r);
   }
-  $("#feed").innerHTML = groups.map((g) => `<div class="day"><h3>${esc(g.label)}</h3><div class="rows">${g.list.map(recordRow).join("")}</div></div>`).join("")
+  $("#feed").innerHTML = groups.map((g) => `<div class="day"><h3>${esc(g.label)}</h3><div class="rows">${g.list.map((r) => recordRow(r, q.length ? snippet(hit(r, q).sn, q) : "")).join("")}</div></div>`).join("")
     + (list.length > rf.limit ? `<button class="more" type="button">Показать ещё ${n(Math.min(100, list.length - rf.limit))}</button>` : "");
 }
 
-// ---- Карточка записи
-let lastFocus = null;
-function openRecord(id) {
+// ---- Карточка записи: закреплённая шапка, переходы по разделам, знания по типам, артефакты и разговор по репликам.
+let lastFocus = null, navList = [];
+const ATOM_ORDER = ["decision", "todo", "fix", "command", "error", "fact"];
+const ATOM_TITLE = { decision: "Решения", todo: "Задачи", fix: "Исправления", command: "Команды", error: "Ошибки", fact: "Факты" };
+const SPEAKERS = "Пользователь|Claude Code|Claude|Codex|Kimi Code|Kimi|ChatGPT";
+const FILE_EXT = "py|js|mjs|cjs|ts|tsx|jsx|md|mdx|json|jsonl|html|css|scss|sh|yml|yaml|toml|swift|sql|txt|csv|pdf|png|jpe?g|webp|svg|mp4|mov|m4a|mp3|docx?|xlsx?|pptx?|zip|env|lock|plist|ipynb";
+const NOT_FILES = /^(next|node|three|vue|react|d3|anime|express|nuxt|nest|chart|alpine|socket|p5)\.js$/i;
+const CMD_START = /^(\$ )?(git|npm|npx|pnpm|yarn|bun|node|python3?|pip3?|uv|brain|bin\/brain|curl|gh|docker|brew|make|ffmpeg|claude|codex|vercel|ssh|cd|ls|cat|rm|mkdir|open|launchctl|sqlite3|psql|cargo|go|swift|xcodebuild)\b/;
+
+// Ссылки, файлы и команды из текста записи и её атомов. Ничего не хранится в базе: считаем при открытии карточки.
+function artifacts(r) {
+  const text = [r.preview, ...r.atoms].join("\n");
+  const links = new Map(), files = new Set(), commands = new Set();
+  const noUrls = text.replace(/https?:\/\/[^\s<>"'`\]]+/g, (raw) => {
+    let u = raw.replace(/[.,;:!?…)*]+$/, "");
+    if ((u.match(/\(/g) || []).length > (u.match(/\)/g) || []).length) u = raw.replace(/[.,;:!?…*]+$/, "");
+    try { const x = new URL(u); if (x.hostname.includes(".")) links.set(u, x); } catch { /* не ссылка */ }
+    return " ";
+  });
+  if (/^https?:\/\//.test(r.location || "")) links.delete(r.location);    // источник и так в шапке
+  for (const m of noUrls.matchAll(/\[вложения: ([^\]]+)\]/g)) for (const f of m[1].split(", ")) files.add(f.trim());
+  const fileRe = new RegExp(`(?:~|\\.{1,2})?(?:/?[\\w.@+-]+/)*[\\w.@+-]+\\.(?:${FILE_EXT})(?![\\w/])`, "gi");
+  for (const m of noUrls.replace(/\[вложения: [^\]]+\]/g, " ").matchAll(fileRe)) {
+    const f = m[0];
+    if (!NOT_FILES.test(f) && /[a-zа-я]/i.test(f.split(".")[0]) && f.length > 4) files.add(f);
+  }
+  const addCommand = (c) => { c = c.trim().replace(/^\$ /, ""); if (c.length > 2 && c.length < 300) commands.add(c); };
+  for (const a of r.atoms) {
+    const p = parseAtom(a);
+    if (p.type !== "command") continue;
+    const inline = [...p.text.matchAll(/`([^`\n]+)`/g)].map((m) => m[1]);
+    (inline.length ? inline : [p.text]).forEach(addCommand);
+  }
+  for (const m of r.preview.matchAll(/```(?:bash|sh|shell|zsh|console)\n([\s\S]*?)```/g)) m[1].split("\n").filter((l) => l.trim() && !l.trim().startsWith("#")).forEach(addCommand);
+  for (const m of r.preview.matchAll(/`([^`\n]{3,200})`/g)) if (CMD_START.test(m[1])) addCommand(m[1]);
+  return { links: [...links].slice(0, 40), files: [...files].slice(0, 40), commands: [...commands].slice(0, 30) };
+}
+// Разговор по репликам: чаты — «Пользователь: … / Claude: …», почта — «Имя <адрес>, дата время:».
+function turns(r) {
+  const chat = new RegExp(`^(${SPEAKERS}): `);
+  const mail = /^(.{1,120}), (\d{4}-\d{2}-\d{2} \d{2}:\d{2}):$/;
+  const out = [];
+  let cur = { who: "", text: [] }, blank = true;
+  for (const line of r.preview.split("\n")) {
+    const c = blank && line.match(chat), m = blank && !c && line.match(mail);
+    if (c || m) {
+      out.push(cur);
+      cur = c ? { who: c[1], text: [line.slice(c[0].length)] } : { who: m[1].replace(/\s*<[^>]*>/, ""), when: m[2], text: [] };
+    } else cur.text.push(line);
+    blank = !line.trim();
+  }
+  out.push(cur);
+  // Пустые строки подряд и «&#x20;» из редакторов только растягивают реплику.
+  const tidy = (lines) => lines.join("\n").replace(/&#x20;/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+  const list = out.map((t) => ({ ...t, text: tidy(t.text) })).filter((t) => t.who || t.text);
+  return list.filter((t) => t.who).length >= 1 ? list : null;
+}
+const copyBtn = (text, label = "Копировать") => `<button class="copy" type="button" data-copy="${esc(text)}">${label}</button>`;
+function copyText(btn) {
+  const done = () => { const was = btn.textContent; btn.textContent = "Скопировано"; setTimeout(() => { btn.textContent = was; }, 1200); };
+  const text = btn.dataset.copy;
+  if (navigator.clipboard?.writeText) navigator.clipboard.writeText(text).then(done, () => {});
+  else {
+    const t = document.createElement("textarea");
+    t.value = text; btn.after(t); t.select();
+    try { document.execCommand("copy"); done(); } catch { /* не вышло — не страшно */ }
+    t.remove();
+  }
+}
+function openRecord(id, list) {
   const r = byId.get(id);
   if (!r) return;
+  const replacing = !!$(".drawer");
+  if (list) navList = list;
+  if (!replacing) lastFocus = document.activeElement;
   closeRecord(true);
-  lastFocus = document.activeElement;
   Charts.tip.hide();
+  const at = navList.indexOf(id), prev = at > 0 ? navList[at - 1] : null, next = at >= 0 && at < navList.length - 1 ? navList[at + 1] : null;
   const notice = r.card ? "" : r.error
     ? `<p class="notice err">Модель не смогла пересказать эту запись: ${esc(r.error)}. Попробует ещё раз в одном из следующих прогонов.</p>`
     : `<p class="notice wait">Карточки пока нет: запись в очереди на пересказ.</p>`;
-  const atoms = r.atoms.map((a) => { const p = parseAtom(a); return `<li>${p.type ? `<span class="tag">${esc(ATOM[p.type] ? ATOM[p.type][0] : p.type)}</span>` : ""}${esc(p.text)}</li>`; }).join("");
-  const sim = neighbors(r.id).slice(0, 5).map(([o, w]) => {
-    const x = byId.get(o);
-    return `<li><button type="button" data-open="${o}"><span class="dot" style="background:${color(x.source)}"></span><span class="t">${esc(x.title)}</span><span class="w">${esc(projName(x.pkey))}</span></button></li>`;
-  }).join("");
+  // Знания по типам
+  const groups = new Map();
+  for (const a of r.atoms) { const p = parseAtom(a); (groups.get(p.type) || groups.set(p.type, []).get(p.type)).push(p.text); }
+  const types = [...ATOM_ORDER.filter((t) => groups.has(t)), ...[...groups.keys()].filter((t) => !ATOM_ORDER.includes(t))];
+  const atoms = types.map((t) => `<h4 class="dr-sub">${esc(ATOM_TITLE[t] || t || "Прочее")} <span class="num">${groups.get(t).length}</span></h4>
+    <ul class="dr-list">${groups.get(t).map((x) => `<li class="a-${esc(t)}">${esc(x)}</li>`).join("")}</ul>`).join("");
+  // Артефакты
+  const art = artifacts(r), artCount = art.links.length + art.files.length + art.commands.length;
+  const artHtml = [
+    art.links.length ? `<h4 class="dr-sub">Ссылки <span class="num">${art.links.length}</span></h4><ul class="arts">${art.links.map(([u, x]) =>
+      `<li><a href="${esc(u)}" target="_blank" rel="noopener noreferrer"><span class="host">${esc(x.hostname.replace(/^www\./, ""))}</span><span class="path">${esc(decodeURI(x.pathname + x.search).replace(/\/$/, "") || "/")}</span></a>${copyBtn(u)}</li>`).join("")}</ul>` : "",
+    art.files.length ? `<h4 class="dr-sub">Файлы <span class="num">${art.files.length}</span></h4><ul class="arts">${art.files.map((f) =>
+      `<li><code>${esc(f)}</code>${copyBtn(f)}</li>`).join("")}</ul>` : "",
+    art.commands.length ? `<h4 class="dr-sub">Команды <span class="num">${art.commands.length}</span></h4><ul class="arts">${art.commands.map((c) =>
+      `<li><code>${esc(c)}</code>${copyBtn(c)}</li>`).join("")}</ul>` : "",
+  ].join("");
+  // Разговор
+  const cut = r.body_len > DATA.preview_chars;
+  const talk = turns(r);
+  const talkHtml = talk
+    ? talk.map((t) => `<div class="turn${t.who === "Пользователь" || /^я$/i.test(t.who) ? " me" : ""}${t.who ? "" : " pre"}">
+        ${t.who ? `<p class="who">${esc(t.who === "Пользователь" ? "Ты" : t.who)}${t.when ? `<span>${esc(t.when)}</span>` : ""}</p>` : ""}
+        <div class="txt">${esc(t.text)}</div></div>`).join("")
+    : `<pre class="transcript">${esc(r.preview)}</pre>`;
+  const sim = neighbors(r.id).slice(0, 6).map(([o]) => {
+    const x = byId.get(o), common = x.topics.filter((t) => r.topics.includes(t)).slice(0, 3);
+    return `<li><button type="button" data-open="${o}"><span class="dot" style="background:${color(x.source)}"></span><span class="t">${esc(x.title)}</span><span class="w">${esc(projName(x.pkey))}${common.length ? ` · общее: ${esc(common.join(", "))}` : ""}</span></button></li>`;
+  });
+  const isUrl = /^https?:\/\//.test(r.location || "");
+  const sections = [
+    ["sum", "Кратко", null, `${notice}
+      ${r.summary ? `<p class="dr-summary">${esc(r.summary)}</p>` : notice ? "" : `<p class="muted">Пересказа нет.</p>`}
+      ${r.topics.length ? topicTags(r.topics) : ""}
+      ${r.questions.length ? `<h4 class="dr-sub">Как это будут искать</h4><ul class="dr-list plain">${r.questions.map((q) => `<li>${esc(q)}</li>`).join("")}</ul>` : ""}
+      <details class="dr-props"><summary>Свойства записи</summary>
+        <dl class="meta">
+          <dt>Начат</dt><dd>${esc(stamp(date(r.started_at)))}</dd>
+          <dt>Последнее сообщение</dt><dd>${esc(stamp(date(r.updated_at)))}</dd>
+          <dt>Проект</dt><dd class="mono">${esc(r.project || "—")}</dd>
+          <dt>Источник</dt><dd class="mono">${esc(r.location || "—")}</dd>
+          <dt>В базе</dt><dd class="mono">id ${r.id}, ${n(r.body_len)} символов</dd>
+          ${r.keywords ? `<dt>Ключевые слова</dt><dd>${esc(r.keywords)}</dd>` : ""}
+        </dl></details>`],
+    atoms ? ["atoms", "Знания", r.atoms.length, atoms] : null,
+    artCount ? ["art", "Артефакты", artCount, artHtml + (cut ? `<p class="dr-note">Собраны по началу записи и её знаниям: в панели лежат первые ${n(DATA.preview_chars)} символов.</p>` : "")] : null,
+    ["talk", talk ? "Разговор" : "Текст", null, `<p class="dr-note">${cut
+      ? `Первые ${n(DATA.preview_chars)} из ${n(r.body_len)} символов. Целиком: <code>brain show ${r.id}</code> ${copyBtn(`brain show ${r.id}`)}`
+      : `${n(r.body_len)} символов.`}</p>${talkHtml}`],
+    sim.length ? ["sim", "Похожие", sim.length, `<ul class="similar">${sim.join("")}</ul>`] : null,
+  ].filter(Boolean);
   const scrimEl = document.createElement("div");
   scrimEl.className = "scrim";
   scrimEl.addEventListener("click", () => closeRecord());
   const d = document.createElement("aside");
-  d.className = "drawer";
+  d.className = "drawer" + (replacing ? " swap" : "");
   d.setAttribute("role", "dialog");
   d.setAttribute("aria-modal", "true");
   d.setAttribute("aria-label", r.title);
+  d.dataset.id = r.id;
+  const arrow = (to, label, path) => `<button class="icon-btn" type="button" data-open="${to ?? ""}" ${to == null ? "disabled" : ""} aria-label="${label}" title="${label}">
+    <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="${path}" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></button>`;
   d.innerHTML = `
-    <button class="close" type="button">Закрыть</button>
-    <p class="label">${esc(srcName(r.source))}, id ${r.id}</p>
-    <h2>${esc(r.title)}</h2>
-    <dl class="meta">
-      <dt>Начат</dt><dd>${esc(stamp(date(r.started_at)))}</dd>
-      <dt>Последнее сообщение</dt><dd>${esc(stamp(date(r.updated_at)))}</dd>
-      <dt>Проект</dt><dd>${r.pkey ? `<a href="#project/${encodeURIComponent(r.pkey)}">${esc(projName(r.pkey))}</a>` : "—"} <span class="mono muted">${esc(r.project || "")}</span></dd>
-      <dt>Файл</dt><dd class="mono">${esc(r.location || "—")}</dd>
-    </dl>
-    <div class="drawer-actions">
-      <button class="btn" type="button" data-graph="${r.id}">Показать на графе</button>
-    </div>
-    ${notice}
-    ${r.summary ? `<p class="label">Кратко</p><p>${esc(r.summary)}</p>` : ""}
-    ${sim ? `<p class="label">Похожие записи</p><ul class="similar">${sim}</ul>` : ""}
-    ${atoms ? `<p class="label">Атомы</p><ul>${atoms}</ul>` : ""}
-    ${r.questions.length ? `<p class="label">Как это будут искать</p><ul>${r.questions.map((q) => `<li>${esc(q)}</li>`).join("")}</ul>` : ""}
-    ${r.keywords ? `<p class="label">Ключевые слова</p><p class="muted" style="font-size:14px">${esc(r.keywords)}</p>` : ""}
-    <p class="label">Расшифровка</p>
-    <p class="muted" style="font-size:14px;margin-bottom:var(--space-3)">${r.body_len > DATA.preview_chars
-      ? `Первые ${n(DATA.preview_chars)} из ${n(r.body_len)} символов. Целиком: <code>brain show ${r.id}</code>.`
-      : `${n(r.body_len)} символов.`}</p>
-    <pre class="transcript">${esc(r.preview)}</pre>`;
+    <header class="dr-head">
+      <div class="dr-top">
+        <p class="label"><span class="dot" style="background:${color(r.source)}"></span>${esc(srcName(r.source))} · ${esc(dayMonth(date(r.updated_at)))}${at >= 0 && navList.length > 1 ? ` · ${at + 1} из ${n(navList.length)}` : ""}</p>
+        <div class="dr-btns">
+          ${navList.length > 1 && at >= 0 ? arrow(prev, "Предыдущая запись (←)", "M10 3L5 8l5 5") + arrow(next, "Следующая запись (→)", "M6 3l5 5-5 5") : ""}
+          <button class="icon-btn close" type="button" aria-label="Закрыть" title="Закрыть (Esc)">
+            <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+        </div>
+      </div>
+      <h2>${esc(r.title)}</h2>
+      <div class="drawer-actions">
+        ${r.pkey ? `<a class="btn sm" href="#project/${encodeURIComponent(r.pkey)}">${esc(projName(r.pkey))}</a>` : ""}
+        ${isUrl ? `<a class="btn sm" href="${esc(r.location)}" target="_blank" rel="noopener noreferrer">Открыть источник ↗</a>` : r.location ? copyBtn(r.location, "Копировать путь").replace('class="copy"', 'class="btn sm copy-btn"') : ""}
+        <button class="btn sm" type="button" data-graph="${r.id}">На графе</button>
+      </div>
+      <nav class="dr-tabs" aria-label="Разделы карточки">${sections.map(([key, title, count], i) =>
+        `<button type="button" data-sec="${key}" aria-current="${i === 0}">${title}${count ? ` <span class="num">${n(count)}</span>` : ""}</button>`).join("")}</nav>
+    </header>
+    <div class="dr-body">${sections.map(([key, title, , html]) => `<section class="dr-sec" data-sec="${key}"><h3>${title}</h3>${html}</section>`).join("")}</div>`;
+  const tabs = [...d.querySelectorAll(".dr-tabs button")], secs = [...d.querySelectorAll(".dr-sec")];
+  const headH = () => d.querySelector(".dr-head").offsetHeight;
+  // Подсвечиваем раздел, который сейчас под шапкой.
+  let jumping = 0;
+  const spy = () => {
+    if (Date.now() < jumping) return;
+    const edge = d.getBoundingClientRect().top + headH() + 24;
+    let on = secs[0];
+    for (const sec of secs) if (sec.getBoundingClientRect().top <= edge) on = sec;
+    if (d.scrollTop + d.clientHeight >= d.scrollHeight - 4) on = secs[secs.length - 1];
+    tabs.forEach((b) => b.setAttribute("aria-current", b.dataset.sec === on.dataset.sec));
+  };
+  d.addEventListener("scroll", spy, { passive: true });
   d.addEventListener("click", (e) => {
-    if (e.target.closest(".close")) return closeRecord();
-    const open = e.target.closest("[data-open]");
-    if (open) return openRecord(+open.dataset.open);
-    const g = e.target.closest("[data-graph]");
+    const t = e.target;
+    if (t.closest(".close")) return closeRecord();
+    const copy = t.closest("[data-copy]");
+    if (copy) return copyText(copy);
+    const tab = t.closest(".dr-tabs button");
+    if (tab) {
+      const sec = secs.find((x) => x.dataset.sec === tab.dataset.sec);
+      tabs.forEach((b) => b.setAttribute("aria-current", b === tab));
+      jumping = Date.now() + 600;
+      d.scrollTo({ top: sec === secs[0] ? 0 : sec.offsetTop - headH() - 8, behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+      return;
+    }
+    const open = t.closest("[data-open]");
+    if (open) {
+      const label = open.getAttribute("aria-label");
+      openRecord(+open.dataset.open);
+      // Стрелкой листают подряд: фокус остаётся на той же стрелке.
+      if (label) [...document.querySelectorAll(".drawer .dr-btns button")].find((b) => b.getAttribute("aria-label") === label && !b.disabled)?.focus();
+      return;
+    }
+    const g = t.closest("[data-graph]");
     if (g) { closeRecord(true); go(`#graph/${g.dataset.graph}`); return; }
-    if (e.target.closest("a[href^='#']")) closeRecord(true);
+    if (t.closest("a[href^='#']")) closeRecord(true);
   });
   // Во весь экран браузер показывает только развёрнутый элемент, поэтому карточку кладём в него.
   (fsElement() || document.body).append(scrimEl, d);
@@ -881,6 +1532,15 @@ function closeRecord(silent) {
   if (!silent && lastFocus && document.contains(lastFocus)) lastFocus.focus();
   if (!silent) lastFocus = null;
 }
+// ← → листают записи списка, из которого открыта карточка.
+addEventListener("keydown", (e) => {
+  const d = $(".drawer");
+  if (!d || e.metaKey || e.ctrlKey || e.altKey || (e.key !== "ArrowLeft" && e.key !== "ArrowRight")) return;
+  const at = navList.indexOf(+d.dataset.id), to = navList[at + (e.key === "ArrowLeft" ? -1 : 1)];
+  if (at < 0 || to == null) return;
+  e.preventDefault();
+  openRecord(to);
+});
 addEventListener("keydown", (e) => {
   if (e.key !== "Escape") return;
   if ($(".drawer")) closeRecord();
@@ -890,7 +1550,7 @@ addEventListener("keydown", (e) => {
 addEventListener("keydown", (e) => {
   const d = $(".drawer");
   if (e.key !== "Tab" || !d) return;
-  const f = [...d.querySelectorAll("button, a[href], [tabindex]:not([tabindex='-1'])")];
+  const f = [...d.querySelectorAll("button:not([disabled]), a[href], summary, [tabindex]:not([tabindex='-1'])")];
   if (!f.length) return;
   if (e.shiftKey && document.activeElement === f[0]) { f[f.length - 1].focus(); e.preventDefault(); }
   else if (!e.shiftKey && document.activeElement === f[f.length - 1]) { f[0].focus(); e.preventDefault(); }

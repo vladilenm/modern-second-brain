@@ -20,6 +20,15 @@ FILE = re.compile(r"^[^\s/]+\.(md|mdx|mp4|mov|m4a|mp3|wav|srt|ass|vtt|json|jsonl
 ENDINGS = sorted("ами ями ого его ому ему ыми ими ов ев ей ой ий ый ая яя ое ее ые ие ом ем ах ях ам ям "
                  "а я ы и у ю е о".split(), key=len, reverse=True)
 STOP = set("для как что это или при про над под без его еще ещё уже так тоже чтобы если когда где".split())
+BRANCHES = {"main", "master", "dev", "develop"}      # имя ветки — не тема
+MONTH = re.compile(rf"^({MONTHS})[а-я]*$")
+# Адреса, ники и ссылки — не темы. «@vitejs/plugin-react» остаётся: это пакет.
+CONTACT = re.compile(r"^([\w.+-]+@[\w-]+(\.[\w-]+)+|@[\w.]+|(https?://|www\.)\S+)$")
+# Название-заглушка ничего не говорит о записи.
+PLACEHOLDER = re.compile(r"^(без названия|untitled|new chat|новый чат|new page|новая страница)?$")
+# Служебные слова заголовков: типы коммитов и ветки. Работают только для тем из названия.
+TITLE_STOP = STOP | set("feat fix chore refactor docs test style perf build dev main master merge readme update "
+                        "коммит коммиты".split())
 
 
 def _stem(word: str) -> str:
@@ -34,7 +43,8 @@ def _stem(word: str) -> str:
 
 def normalize(keyword: str) -> Optional[str]:
     k = " ".join((keyword or "").lower().replace("ё", "е").split()).strip(" .,;:!?«»\"'()")
-    if len(k) < 3 or DATE.match(k) or NUMBER.match(k) or FILE.match(k) or k.startswith(("/", "~/")):
+    if (len(k) < 3 or k in BRANCHES or DATE.match(k) or MONTH.match(k) or NUMBER.match(k) or FILE.match(k) or CONTACT.match(k)
+            or k.startswith(("/", "~/"))):
         return None
     return " ".join(_stem(w) for w in k.split(" "))
 
@@ -43,7 +53,7 @@ def record_topics(keywords: Optional[str], title: Optional[str]) -> List[Tuple[s
     """Темы записи без повторов: из ключевых слов карточки, а если их нет — из слов названия."""
     raw = [w.strip() for w in (keywords or "").split(",") if w.strip()]
     if not raw:
-        raw = [w for w in re.findall(r"[\w-]+", (title or "").lower()) if len(w) > 3 and w not in STOP]
+        raw = title_words(title)
     out, seen = [], set()
     for w in raw:
         key = normalize(w)
@@ -51,6 +61,15 @@ def record_topics(keywords: Optional[str], title: Optional[str]) -> List[Tuple[s
             seen.add(key)
             out.append((key, w))
     return out
+
+
+def title_words(title: Optional[str]) -> List[str]:
+    """Слова названия как запасные темы: без заглушек, владельца репозитория и служебных слов."""
+    t = " ".join((title or "").lower().split())
+    if PLACEHOLDER.match(t):
+        return []
+    t = re.sub(r"[\w.-]+/(?=[\w.-])", "", t)          # «vladilenm/mac-draw» → «mac-draw»
+    return [w for w in re.findall(r"[\w-]+", t) if len(w) > 3 and w not in TITLE_STOP]
 
 
 MIN_SIM = 0.12
@@ -79,8 +98,17 @@ class Topics:
         return [self.display[k] for k in ranked[:limit]]
 
 
-def build(rows: Iterable[Tuple[int, Optional[str], Optional[str]]]) -> Topics:
-    per = {rid: record_topics(kw, title) for rid, kw, title in rows}
+def build(rows: Iterable[Tuple[int, Optional[str], Optional[str]]], stop: Iterable[str] = ()) -> Topics:
+    """stop — слова и фразы, которые темами не считаются: например, имя владельца базы."""
+    rows = list(rows)
+    banned = {normalize(s) for s in stop} - {None}
+    has_kw = {rid for rid, kw, _ in rows if any(w.strip() for w in (kw or "").split(","))}
+    per = {rid: [x for x in record_topics(kw, title) if x[0] not in banned] for rid, kw, title in rows}
+    # Слово из названия — тема, только если модель хоть раз назвала его ключевым словом в другой записи:
+    # иначе темами становятся «какие», «создать» и «основной». Пока ключевых слов нет ни у кого, верим названиям.
+    vocab = {k for rid in has_kw for k, _ in per[rid]}
+    if vocab:
+        per = {rid: ts if rid in has_kw else [x for x in ts if x[0] in vocab] for rid, ts in per.items()}
     n = len(per)
     forms: Dict[str, Counter] = defaultdict(Counter)
     for ts in per.values():

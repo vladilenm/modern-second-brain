@@ -21,15 +21,13 @@
 <div class="app">
   <nav class="side" id="side" aria-label="Разделы">
     <a class="brand" href="#overview">Второй мозг</a>
-    <div class="search" role="search">
-      <label class="side-label" for="q-global">Поиск <kbd>/</kbd></label>
-      <input id="q-global" type="search" autocomplete="off" placeholder="рилс субтитры" aria-controls="q-results" aria-expanded="false">
-      <ul class="search-results" id="q-results" role="listbox" hidden></ul>
-    </div>
+    <button class="side-search" type="button" id="q-open"><span>Поиск</span><kbd>/</kbd></button>
     <ul class="nav">
       <li><a href="#overview" data-tab="overview">Обзор</a></li>
       <li><a href="#graph" data-tab="graph">Граф</a></li>
       <li><a href="#projects" data-tab="projects">Проекты</a></li>
+      <li><a href="#topics" data-tab="topics">Темы</a></li>
+      <li><a href="#knowledge" data-tab="knowledge">Знания</a></li>
       <li><a href="#records" data-tab="records">Записи</a></li>
     </ul>
     <div class="side-state" id="side-state" aria-live="polite"></div>
@@ -38,12 +36,36 @@
 
   <main id="main" tabindex="-1">
     <section class="tab" data-tab="overview" aria-labelledby="h-overview" hidden>
-      <header class="tab-head">
-        <p class="label">01 / Обзор</p>
-        <h1 class="display" id="h-overview" tabindex="-1">Что лежит в базе</h1>
-        <p class="lede" id="lede"></p>
-      </header>
-      <div class="kpis" id="kpis"></div>
+      <h1 class="sr-only" id="h-overview" tabindex="-1">Обзор</h1>
+      <div class="hero">
+        <div class="finder-home" id="finder-home">
+          <div class="finder" id="finder" role="search">
+            <svg class="finder-icon" width="20" height="20" viewBox="0 0 20 20" aria-hidden="true"><circle cx="9" cy="9" r="5.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M13.2 13.2L17 17" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            <input id="q-global" type="search" autocomplete="off" placeholder="Что вспомнить? Например: рилс субтитры" aria-label="Поиск по базе" aria-controls="q-results" aria-expanded="false">
+            <kbd>/</kbd>
+            <div class="search-panel" id="q-panel" hidden>
+              <div class="sf" id="q-filters" aria-label="Фильтры поиска"></div>
+              <ul class="search-results" id="q-results" role="listbox"></ul>
+            </div>
+          </div>
+        </div>
+        <div class="quick" id="quick"></div>
+        <div class="quick" id="recent" hidden></div>
+        <p class="base-line" id="base-line"></p>
+      </div>
+      <p class="notice err" id="base-alert" hidden></p>
+      <div class="split">
+        <div class="card">
+          <h2 class="card-title">Активные проекты</h2>
+          <p class="card-sub" id="week-sub"></p>
+          <div class="fresh" id="week-projects"></div>
+        </div>
+        <div class="card">
+          <h2 class="card-title">Свежие записи</h2>
+          <p class="card-sub">Последнее, что попало в базу</p>
+          <div class="fresh-days" id="fresh"></div>
+        </div>
+      </div>
       <div class="card chart-card">
         <div class="card-head">
           <div>
@@ -55,30 +77,14 @@
         <div class="legend" id="weekly-legend"></div>
         <div class="chart" id="weekly" role="img"></div>
       </div>
-      <div class="split">
-        <div class="card">
-          <h2 class="card-title">Где больше всего работы</h2>
-          <p class="card-sub">Проекты по числу записей</p>
-          <div class="hbars" id="top-projects"></div>
-        </div>
-        <div class="card">
-          <h2 class="card-title">Свежее</h2>
-          <p class="card-sub">Последние записи в базе</p>
-          <div class="fresh" id="fresh"></div>
-        </div>
-      </div>
     </section>
 
-    <section class="tab tab-wide" data-tab="graph" aria-labelledby="h-graph" hidden>
-      <header class="tab-head">
-        <p class="label">02 / Граф</p>
-        <h1 class="headline" id="h-graph" tabindex="-1">Связи между записями</h1>
-        <p class="lede" id="graph-sub"></p>
-      </header>
+    <section class="tab tab-wide tab-graph" data-tab="graph" aria-labelledby="h-graph" hidden>
+      <h1 class="sr-only" id="h-graph" tabindex="-1">Граф связей</h1>
       <div class="graph-stage" id="graph-stage">
-        <div class="graph-controls" id="graph-controls"></div>
         <div class="graph-box">
-          <canvas id="graph" role="img"></canvas>
+          <div id="graph" role="img" aria-describedby="graph-help"></div>
+          <div class="graph-controls" id="graph-controls"></div>
           <div class="graph-tools">
             <div class="graph-bar" role="group" aria-label="Масштаб">
               <button type="button" data-zoom="in" aria-label="Приблизить" title="Приблизить (+)">+</button>
@@ -91,7 +97,10 @@
             <div class="graph-bar">
               <button type="button" id="g-full" aria-pressed="false" aria-label="Граф на весь экран" title="На весь экран (F)"></button>
             </div>
-            <div class="graph-view" id="graph-view" hidden>
+            <div class="graph-bar">
+              <button type="button" id="gh-btn" aria-expanded="false" aria-controls="graph-info" aria-label="Легенда и управление" title="Легенда и управление">?</button>
+            </div>
+            <div class="graph-pop graph-view" id="graph-view" hidden>
               <label class="toggle"><input type="checkbox" id="gv-topic"> <span id="gv-topic-label">Связи по темам</span></label>
               <div class="gv-row">
                 <div class="gv-head"><label for="gv-minw">Сила связи</label><output id="gv-minw-out" for="gv-minw"></output></div>
@@ -104,12 +113,17 @@
               </div>
               <button class="btn" type="button" id="gv-relayout">Разложить заново</button>
             </div>
+            <div class="graph-pop graph-info" id="graph-info" hidden>
+              <p class="gi-sum" id="graph-sub"></p>
+              <p class="graph-legend">
+                <span><i class="lg-hub"></i>проект</span><span><i class="lg-rec"></i>запись</span><span><i class="lg-project-line"></i>запись — проект</span><span><i class="lg-line"></i>общие темы</span>
+              </p>
+              <p class="graph-help">Клик выбирает узел, второй клик открывает его, Esc снимает выбор.</p>
+              <p class="graph-help" id="graph-help">3D · Перетаскивай фон для вращения, колесо или щипок — масштаб, правая кнопка — сдвиг. F — на весь экран.</p>
+            </div>
           </div>
           <aside class="graph-panel" id="graph-panel" aria-label="Выбранное на графе" hidden></aside>
-          <p class="graph-legend">
-            <span><i class="lg-hub"></i>проект</span><span><i class="lg-rec"></i>запись</span><span><i class="lg-line"></i>общие темы</span>
-            <span class="lg-hint">Клик выбирает, второй клик открывает, Esc снимает выбор, F — на весь экран</span>
-          </p>
+          <p class="graph-hint" id="graph-hint"></p>
         </div>
       </div>
     </section>
@@ -130,9 +144,45 @@
       <div id="project-view" hidden></div>
     </section>
 
+    <section class="tab" data-tab="topics" aria-labelledby="h-topics" hidden>
+      <div id="topics-list-view">
+        <header class="tab-head">
+          <p class="label">04 / Темы</p>
+          <h1 class="headline" id="h-topics" tabindex="-1">Темы</h1>
+          <p class="lede" id="topics-sub"></p>
+        </header>
+        <div class="filters">
+          <input type="search" id="q-topics" placeholder="Название темы" aria-label="Фильтр тем">
+          <div class="seg" id="topics-sort" role="group" aria-label="Сортировка"></div>
+        </div>
+        <p class="count" id="topics-count"></p>
+        <div class="tgrid" id="tgrid"></div>
+      </div>
+      <div id="topic-view" hidden></div>
+    </section>
+
+    <section class="tab" data-tab="knowledge" aria-labelledby="h-knowledge" hidden>
+      <header class="tab-head">
+        <p class="label">05 / Знания</p>
+        <h1 class="headline" id="h-knowledge" tabindex="-1">Знания</h1>
+        <p class="lede" id="k-sub"></p>
+      </header>
+      <div class="seg" id="k-type" role="group" aria-label="Тип знания"></div>
+      <div class="filters">
+        <input type="search" id="q-knowledge" placeholder="Слово в знании, названии записи или проекте" aria-label="Фильтр знаний">
+        <select id="k-project" aria-label="Проект"></select>
+        <div class="seg" id="k-period" role="group" aria-label="Период"></div>
+      </div>
+      <div class="k-bar">
+        <p class="count" id="k-count" aria-live="polite"></p>
+        <button class="btn sm" type="button" id="k-copy">Скопировать как Markdown</button>
+      </div>
+      <div class="feed" id="k-feed"></div>
+    </section>
+
     <section class="tab" data-tab="records" aria-labelledby="h-records" hidden>
       <header class="tab-head">
-        <p class="label">04 / Записи</p>
+        <p class="label">06 / Записи</p>
         <h1 class="headline" id="h-records" tabindex="-1">Записи и здоровье базы</h1>
       </header>
       <h2 class="card-title section-title">Источники</h2>
@@ -140,7 +190,7 @@
       <p class="card-sub" id="health-note"></p>
       <h2 class="card-title section-title">Все записи</h2>
       <div class="filters">
-        <input type="search" id="q-records" placeholder="Название, проект, ключевые слова, пересказ" aria-label="Фильтр записей">
+        <input type="search" id="q-records" placeholder="Название, проект, знания, текст" aria-label="Фильтр записей">
         <div class="seg" id="f-source" role="group" aria-label="Источник"></div>
         <div class="seg" id="f-status" role="group" aria-label="Статус"></div>
       </div>

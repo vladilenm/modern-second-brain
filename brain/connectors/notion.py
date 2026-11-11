@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -15,6 +16,7 @@ from collections import deque
 from typing import Iterator, Optional
 
 from .. import keychain
+from ..redact import CARD_MASK, MASK
 from .base import ApiConnector, Batch, Record
 
 API_BASE = "https://api.notion.com/v1"
@@ -22,6 +24,27 @@ API_VERSION = "2026-03-11"
 REQUEST_INTERVAL = 0.35
 PAGE_BATCH = 20
 MAX_RESPONSE = 32 * 1024 * 1024
+FILE_URL = re.compile(
+    r'https://(?:prod-files-secure\.s3\.us-west-2\.amazonaws\.com/'
+    r'|s3\.us-west-2\.amazonaws\.com/secure\.notion-static\.com/|secure\.notion-static\.com/)'
+    r'(?:' + re.escape(MASK) + '|' + re.escape(CARD_MASK) + r'|[^\s<>"\')])+'
+)
+
+
+def normalize_file_urls(text: str) -> str:
+    """Стабильные адреса вложений для индекса, без временной подписи загрузки Notion.
+
+    Подпись меняется при каждом чтении и не означает правку документа. Файлы открывают
+    через исходную страницу: подписанные ссылки из API всё равно истекают через час.
+    Маски учитываем для нормализации уже сохранённых локальных записей.
+    """
+    def stable(match):
+        url = urllib.parse.urlsplit(match.group())
+        params = url.query.split("&")
+        kept = [p for p in params if not p.split("=", 1)[0].lower().startswith("x-amz-")]
+        return url._replace(query="&".join(kept)).geturl() if kept != params else match.group()
+
+    return FILE_URL.sub(stable, text)
 
 
 class Inaccessible(RuntimeError):
@@ -290,7 +313,7 @@ class NotionConnector(ApiConnector):
         title = next((property_text(p) for p in properties.values() if p.get("type") == "title"), "")
         props = [f"{name}: {property_text(p)}" for name, p in properties.items()
                  if p.get("type") != "title" and property_text(p)]
-        body = "\n\n".join(s for s in ("\n".join(props), markdown) if s)
+        body = normalize_file_urls("\n\n".join(s for s in ("\n".join(props), markdown) if s))
         return Record("notion", object_id(item["id"]), title or "Без названия", body, item["last_edited_time"],
                       started_at=item.get("created_time"), location=item.get("url"), kind="document")
 

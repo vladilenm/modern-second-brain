@@ -17,7 +17,7 @@ from . import connectors, status as status_mod, topics
 from .timeutil import now_iso
 
 WEB = Path(__file__).with_name("web")
-SCRIPTS = ("charts.js", "graph.js", "app.js")   # порядок важен: app.js пользуется первыми двумя
+SCRIPTS = ("graph-vendor.js", "charts.js", "graph.js", "graph-3d.js", "app.js")
 PREVIEW_CHARS = 6000
 
 
@@ -62,14 +62,16 @@ def _name_parts(key: str, group: list) -> set:
     return {key} | {seg for seg in segs if len(seg) >= 4}
 
 
-def _projects(records: list) -> dict:
+def _projects(records: list, stop=()) -> dict:
     """Темы и ключ проекта у каждой записи; проекты с путями и главными темами; рёбра графа."""
-    t = topics.build((r["id"], r["keywords"], r["title"]) for r in records)
+    t = topics.build(((r["id"], r["keywords"], r["title"]) for r in records), stop=stop)
     groups = defaultdict(list)
     for r in records:
         key, name = project_key(r["project"])
         r["pkey"] = key
         r["topics"] = t.shown.get(r["id"], [])
+        # Все темы записи, а не только восемь самых редких: по ним считаются страницы тем.
+        r["topics_all"] = [t.display[k] for k in t.keys.get(r["id"], [])]
         groups[key].append((name, r["project"], r["id"]))
     projects = {
         key: {"name": Counter(name for name, _, _ in g).most_common(1)[0][0],
@@ -125,7 +127,7 @@ def collect(conn: sqlite3.Connection, cfg: dict) -> dict:
         "batch_limit": int(cfg["llm"].get("batch_limit", 40)),
         "preview_chars": PREVIEW_CHARS,
         "records": records,
-        **_projects(records),
+        **_projects(records, cfg.get("topic_stopwords") or ()),
     }
 
 

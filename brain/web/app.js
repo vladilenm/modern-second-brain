@@ -588,9 +588,17 @@ function newsGroup(g) {
     ${bareLine}
   </section>`;
 }
+function newsMarkdown() {
+  return `# Что нового ${newsPeriod()}\n\n` + newsModel().groups.map((g) => {
+    const lines = [...g.main, ...g.rest].map((a) => `- **${atomLabel(a.type)}:** ${a.text}`);
+    if (g.bare.length) lines.push(`- без знаний: ${g.bare.map((r) => r.title).join("; ")}`);
+    return `## ${newsName(g.key)}\n${newsTally(g)}\n\n${lines.join("\n")}`;
+  }).join("\n\n") + "\n";
+}
 function drawNews() {
   syncNewsTools();
   const m = newsModel(), projects = m.groups.filter((g) => g.key).length;
+  $("#news-copy").hidden = !m.count;
   const counts = m.count ? [words(m.count, RECORD_FORMS), projects && words(projects, PROJECT_FORMS)].filter(Boolean).join(", ") : "";
   $("#news-sub").textContent = [counts, newsPeriod()].filter(Boolean).join(" · ");
   if (!m.count) {
@@ -605,6 +613,7 @@ function drawNews() {
 function initNews() {
   seg($("#news-range"), NEWS_RANGES, news.range, (v) => { news.range = v; news.open.clear(); saveNews(); drawNews(); });
   $("#news-seen").addEventListener("click", markSeen);
+  $("#news-copy").addEventListener("click", (e) => { e.currentTarget.dataset.copy = newsMarkdown(); copyText(e.currentTarget); });
   $("#news").addEventListener("click", (e) => {
     const b = e.target.closest("[data-nmore]");
     if (!b) return;

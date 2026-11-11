@@ -108,8 +108,21 @@ try {
   assert.equal(await locked.locator('#news-range [data-v="seen"]').isHidden(), true);
   assert.equal((await titles(locked)).length, 4);
 
+  // Markdown: все шесть типов знаний без обрезки, записи без знаний одной строкой.
+  const copy = await open(await context());
+  assert.equal(await copy.locator('#news-copy').isVisible(), true);
+  const md = await copy.evaluate(() => newsMarkdown());
+  assert.match(md, /^# Что нового за 7 дней\n\n## Проект-1\n6 записей · 6 решений · 1 задача · 1 ошибка\n\n- \*\*решение:\*\* Решение 1\n/);
+  assert.equal((md.match(/\*\*решение:\*\*/g) || []).length, 6, 'все решения, а не первые пять');
+  assert(md.includes('- **команда:** brain sync --rescan'));
+  assert(md.includes('- **факт:** Субтитры хранятся в srt'));
+  assert(md.includes('- без знаний: Запись 03; Запись 04; Запись 05; Запись 06'));
+  assert(md.endsWith('## Без проекта\n1 запись · 1 исправление\n\n- **исправление:** Исправили путь к базе\n'));
+  await copy.locator('#news-range [data-v="today"]').click();
+  assert.match(await copy.evaluate(() => newsMarkdown()), /^# Что нового сегодня\n\n## Без проекта\n/);
+
   assert.deepEqual(failures, [], 'нет ошибок в браузере');
-  console.log('PASS: что нового — периоды, группы, раскрытие, запись по клику, пустая база, узкий экран, отметка просмотра, хранилище');
+  console.log('PASS: что нового — периоды, группы, раскрытие, запись по клику, пустая база, узкий экран, отметка просмотра, хранилище, Markdown');
 } finally {
   await browser.close();
   await rm(out, { recursive: true, force: true });

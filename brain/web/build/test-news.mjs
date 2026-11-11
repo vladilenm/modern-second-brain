@@ -135,8 +135,35 @@ try {
   await copy.locator('#news-range [data-v="today"]').click();
   assert.match(await copy.evaluate(() => newsMarkdown()), /^# Что нового сегодня\n\n## Без проекта\n/);
 
+  // Закреплённые: звёздочка в карточке записи, список на обзоре, Markdown, клавиша S, очистка.
+  const pin = await open(await context());
+  assert.equal(await pin.locator('#pins-card').isHidden(), true, 'без закреплённых карточки нет');
+  await pin.locator('#news .nlist button').first().click();
+  await pin.locator('.drawer [data-pin]').click();
+  assert.equal(await pin.locator('.drawer [data-pin]').getAttribute('aria-pressed'), 'true');
+  assert.equal(await pin.locator('.drawer [data-pin]').innerText(), '★ Закреплено');
+  await pin.keyboard.press('Escape');
+  assert.deepEqual(await pin.locator('#pins .rrow .t').allInnerTexts(), ['Запись 01']);
+  assert.deepEqual(await pin.evaluate(() => JSON.parse(localStorage.getItem('brain.pins'))), [1]);
+  assert.match(await pin.evaluate(() => pinsMarkdown()),
+    /^# Закреплённые записи \(1\)\n\n## Запись 01\nПроект-1 · Codex · [^\n]+\n\nТестовая карточка записи\n\n- \*\*решение:\*\* Решение 1\n/);
+  await pin.reload();
+  await pin.locator('#news').waitFor();
+  assert.equal(await pin.locator('#pins .rrow').count(), 1, 'закреплённое переживает перезагрузку');
+  await pin.locator('#pins .rrow').click();
+  await pin.locator('.drawer').waitFor();
+  await pin.keyboard.press('s');
+  assert.equal(await pin.locator('.drawer [data-pin]').innerText(), '☆ Закрепить');
+  await pin.keyboard.press('s');
+  await pin.keyboard.press('Escape');
+  assert.equal(await pin.locator('#pins .rrow').count(), 1);
+  pin.once('dialog', dialog => dialog.accept());
+  await pin.locator('#pins-clear').click();
+  assert.equal(await pin.locator('#pins-card').isHidden(), true, 'очистка убирает карточку');
+  assert.deepEqual(await pin.evaluate(() => JSON.parse(localStorage.getItem('brain.pins'))), []);
+
   assert.deepEqual(failures, [], 'нет ошибок в браузере');
-  console.log('PASS: что нового — периоды, группы, раскрытие, запись по клику, пустая база, узкий экран, отметка просмотра, хранилище, Markdown, лимит проектов');
+  console.log('PASS: что нового — периоды, группы, раскрытие, запись по клику, пустая база, узкий экран, отметка просмотра, хранилище, Markdown, лимит проектов, закреплённые');
 } finally {
   await browser.close();
   await rm(out, { recursive: true, force: true });

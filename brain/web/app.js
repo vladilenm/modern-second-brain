@@ -437,6 +437,7 @@ function renderOverview() {
     baseLine();
     weekProjects();
     initNews();
+    initPins();
     seg($("#weekly-range"), [["3m", "3 месяца"], ["1y", "Год"], ["all", "Всё"]], range, (v) => { range = v; drawWeekly(); });
   }
   drawWeekly();
@@ -615,6 +616,46 @@ function drawNews() {
   $("#news").innerHTML = shown.map(newsGroup).join("") + (m.groups.length > shown.length
     ? `<button class="more" type="button" data-nmore="*">Показать ещё ${esc(words(m.groups.length - shown.length, PROJECT_FORMS))}</button>` : "");
 }
+// ---- Закреплённые записи: быстрый возврат и пакет контекста для вставки в нейронку
+const PINS_KEY = "brain.pins";
+let pins = [];
+try { pins = (JSON.parse(localStorage.getItem(PINS_KEY)) || []).filter((id) => byId.has(id)); } catch { /* без хранилища список живёт до перезагрузки */ }
+const isPinned = (id) => pins.includes(id);
+const pinLabel = (id) => (isPinned(id) ? "★ Закреплено" : "☆ Закрепить");
+function togglePin(id) {
+  pins = isPinned(id) ? pins.filter((x) => x !== id) : [id, ...pins];
+  try { localStorage.setItem(PINS_KEY, JSON.stringify(pins)); } catch { /* не запомним */ }
+  document.querySelectorAll(`[data-pin="${id}"]`).forEach((b) => { b.textContent = pinLabel(id); b.setAttribute("aria-pressed", isPinned(id)); });
+  drawPins();
+}
+function pinsMarkdown() {
+  return `# Закреплённые записи (${pins.length})\n\n` + pins.map((id) => {
+    const r = byId.get(id);
+    const meta = [projName(r.pkey), srcName(r.source), fullDate(date(r.updated_at)), /^https?:/.test(r.location || "") && r.location].filter(Boolean).join(" · ");
+    const atoms = r.atoms.map(parseAtom).map((a) => `- **${atomLabel(a.type)}:** ${a.text}`).join("\n");
+    return [`## ${r.title}\n${meta}`, r.summary, atoms].filter(Boolean).join("\n\n");
+  }).join("\n\n") + "\n";
+}
+function drawPins() {
+  $("#pins-card").hidden = !pins.length;
+  $("#pins-sub").textContent = pins.length ? `${words(pins.length, RECORD_FORMS)} · звёздочка в карточке записи или клавиша S` : "";
+  $("#pins").innerHTML = pins.map((id) => recordRow(byId.get(id))).join("");
+}
+function initPins() {
+  $("#pins-copy").addEventListener("click", (e) => { e.currentTarget.dataset.copy = pinsMarkdown(); copyText(e.currentTarget); });
+  $("#pins-clear").addEventListener("click", () => {
+    if (!confirm("Убрать все закреплённые записи?")) return;
+    [...pins].forEach(togglePin);
+  });
+  drawPins();
+}
+// S в открытой карточке закрепляет или открепляет запись.
+addEventListener("keydown", (e) => {
+  const d = $(".drawer");
+  if (!d || e.metaKey || e.ctrlKey || e.altKey || !/^[sSыЫ]$/.test(e.key)) return;
+  e.preventDefault();
+  togglePin(+d.dataset.id);
+});
 function initNews() {
   seg($("#news-range"), NEWS_RANGES, news.range, (v) => { news.range = v; news.open.clear(); saveNews(); drawNews(); });
   $("#news-seen").addEventListener("click", markSeen);
@@ -1611,6 +1652,7 @@ function openRecord(id, list) {
         ${r.pkey ? `<a class="btn sm" href="#project/${encodeURIComponent(r.pkey)}">${esc(projName(r.pkey))}</a>` : ""}
         ${isUrl ? `<a class="btn sm" href="${esc(r.location)}" target="_blank" rel="noopener noreferrer">Открыть источник ↗</a>` : r.location ? copyBtn(r.location, "Копировать путь").replace('class="copy"', 'class="btn sm copy-btn"') : ""}
         <button class="btn sm" type="button" data-graph="${r.id}">На графе</button>
+        <button class="btn sm" type="button" data-pin="${r.id}" aria-pressed="${isPinned(r.id)}" title="Закрепить на обзоре (S)">${pinLabel(r.id)}</button>
       </div>
       <nav class="dr-tabs" aria-label="Разделы карточки">${sections.map(([key, title, count], i) =>
         `<button type="button" data-sec="${key}" aria-current="${i === 0}">${title}${count ? ` <span class="num">${n(count)}</span>` : ""}</button>`).join("")}</nav>
@@ -1632,6 +1674,8 @@ function openRecord(id, list) {
   d.addEventListener("click", (e) => {
     const t = e.target;
     if (t.closest(".close")) return closeRecord();
+    const pin = t.closest("[data-pin]");
+    if (pin) return togglePin(+pin.dataset.pin);
     const copy = t.closest("[data-copy]");
     if (copy) return copyText(copy);
     const tab = t.closest(".dr-tabs button");

@@ -9,3 +9,5 @@ menubar/build/
 .claude/worktrees/
 .DS_Store
 node_modules/
+# Рабочие материалы других задач (скриншоты, настройки программ) — не часть проекта
+outputs/

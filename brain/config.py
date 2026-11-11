@@ -94,6 +94,19 @@ DEFAULTS = {
             "keychain_account": "default",
             "max_pages_per_run": 100,
         },
+        "youtube": {
+            "enabled": False,
+            # Свои каналы: "@handle", ссылка на канал или идентификатор UC…
+            "channels": [],
+            "every_minutes": 360,
+            "summarize": True,
+            "api_base": "https://www.googleapis.com/youtube/v3",
+            "keychain_service": "brain-youtube",
+            "keychain_account": "default",
+            # Сколько веток комментариев брать под видео и сколько видео обновлять за прогон.
+            "comments_per_video": 30,
+            "max_videos_per_run": 100,
+        },
     },
 }
 

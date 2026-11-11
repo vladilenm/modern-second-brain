@@ -246,9 +246,9 @@ class RegistryTests(unittest.TestCase):
     def test_every_connector_is_described(self):
         reg = connectors.registry()
         self.assertEqual([r["source"] for r in reg],
-                         ["claude_code", "codex", "chatgpt", "github", "gmail", "yandex_mail", "kimi", "notion"])
+                         ["claude_code", "codex", "chatgpt", "github", "gmail", "yandex_mail", "kimi", "notion", "youtube"])
         self.assertEqual([r["connector"] for r in reg],
-                         ["claude_code", "codex", "chatgpt_export", "github", "gmail", "yandex_mail", "kimi", "notion"])
+                         ["claude_code", "codex", "chatgpt_export", "github", "gmail", "yandex_mail", "kimi", "notion", "youtube"])
         for r in reg:
             self.assertTrue(r["title"] and r["about"], r)
         types = {r["source"]: r["type"] for r in reg}
@@ -1295,6 +1295,181 @@ class HealthTests(unittest.TestCase):
         self.assertEqual([q["source"] for q in status.snapshot(self.conn)["quiet"]], ["codex"])
         data = dashboard.collect(self.conn, make_cfg(Path(tempfile.mkdtemp())))
         self.assertTrue(data["silence"]["codex"]["quiet"])
+
+
+class FakeYouTube(http.server.BaseHTTPRequestHandler):
+    """Фейковый YouTube Data API: ответ выбирает функция по пути и параметрам; (код, причина) — ошибка."""
+    answer = None
+    hits: list = []  # (путь, параметры, ключ из заголовка)
+
+    def do_GET(self):
+        path, _, query = self.path.partition("?")
+        params = {k: v[0] for k, v in urllib.parse.parse_qs(query).items()}
+        FakeYouTube.hits.append((path, params, self.headers.get("X-Goog-Api-Key")))
+        result = FakeYouTube.answer(path, params)
+        code = 200
+        if isinstance(result, tuple):
+            code, reason = result
+            result = {"error": {"code": code, "errors": [{"reason": reason}]}}
+        body = json.dumps(result).encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+def yt_video(vid, published, views="12345", likes="540", comments="87", title=None):
+    return {"id": vid, "snippet": {"title": title or f"Видео {vid}", "description": f"Описание {vid}",
+                                   "publishedAt": published, "channelTitle": "Канал"},
+            "statistics": {"viewCount": views, "likeCount": likes, "commentCount": comments},
+            "contentDetails": {"duration": "PT18M42S"}}
+
+
+def yt_thread(text, likes=0, author="viewer", replies=()):
+    return {"snippet": {"topLevelComment": {"snippet": {"textDisplay": text, "likeCount": likes,
+                                                         "authorChannelId": {"value": author}}}},
+            "replies": {"comments": [{"snippet": {"textDisplay": t, "authorChannelId": {"value": a}}} for t, a in replies]}}
+
+
+class YouTubeTests(unittest.TestCase):
+    OWNER = "UC" + "a" * 22
+
+    def setUp(self):
+        from brain.connectors.youtube import YouTubeConnector
+        self.server = http.server.HTTPServer(("127.0.0.1", 0), FakeYouTube)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
+        FakeYouTube.hits = []
+        self.videos = {"new": yt_video("new", "2026-11-10T09:00:00Z"), "mid": yt_video("mid", "2026-10-01T09:00:00Z"),
+                       "old": yt_video("old", "2025-01-01T09:00:00Z")}
+        self.threads = {"new": [yt_thread("Как подключить MCP?", 41, replies=[("Смотри описание", self.OWNER), ("Спасибо!", "v2")]),
+                                yt_thread("Отличный разбор")]}
+        self.disabled, self.quota_on = {"old"}, set()
+        FakeYouTube.answer = self.route
+        self.cfg = make_cfg(Path(tempfile.mkdtemp()))
+        self.cfg["sources"]["youtube"].update(
+            enabled=True, channels=["@mine"], api_base=f"http://127.0.0.1:{self.server.server_port}",
+            key_command=[sys.executable, "-c", "print('test-key')"])
+        self.connector = YouTubeConnector
+        self.conn = db.connect(self.cfg["db_path"])
+
+    def route(self, path, params):
+        if path == "/channels":
+            if params.get("forHandle") != "@mine":
+                return {"items": []}
+            return {"items": [{"id": self.OWNER, "snippet": {"title": "Мой канал"},
+                               "contentDetails": {"relatedPlaylists": {"uploads": "UUmine"}}}]}
+        if path == "/playlistItems":
+            ids = list(self.videos)
+            if params.get("pageToken") == "p2":
+                return {"items": [{"contentDetails": {"videoId": i}} for i in ids[2:]]}
+            return {"items": [{"contentDetails": {"videoId": i}} for i in ids[:2]], "nextPageToken": "p2"}
+        if path == "/videos":
+            return {"items": [self.videos[i] for i in params["id"].split(",")]}
+        if path == "/commentThreads":
+            vid = params["videoId"]
+            if vid in self.quota_on:
+                return (403, "quotaExceeded")
+            if vid in self.disabled:
+                return (403, "commentsDisabled")
+            return {"items": self.threads.get(vid, [])}
+        return (404, "notFound")
+
+    def fetch(self, cursor=None, now=NOW, **settings):
+        self.cfg["sources"]["youtube"].update(settings)
+        connector = self.connector(self.cfg)
+        connector.now = now
+        return list(connector.fetch(cursor))
+
+    def test_record_text_and_key_in_header(self):
+        [batch] = self.fetch()
+        by_id = {r.external_id: r for r in batch.records}
+        self.assertEqual([r.external_id for r in batch.records], ["new", "mid", "old"])  # от новых к старым
+        new = by_id["new"]
+        self.assertEqual((new.source, new.kind, new.title, new.project), ("youtube", "discussion", "Видео new", None))
+        self.assertEqual((new.updated_at, new.started_at), ("2026-11-10T09:00:00Z", "2026-11-10T09:00:00Z"))
+        self.assertEqual(new.location, "https://www.youtube.com/watch?v=new")
+        self.assertEqual(new.body, "Канал: Мой канал\n"
+                                   "Опубликовано: 2026-11-10 · 18:42\n"
+                                   "Статистика: около 12 тыс. просмотров · около 540 лайков · 87 комментариев\n"
+                                   "\nОписание:\nОписание new\n"
+                                   "\nКомментарии зрителей (сначала самые заметные):\n"
+                                   "— Как подключить MCP? (лайков: 41)\n"
+                                   "  ↳ автор канала: Смотри описание\n"
+                                   "  ↳ Спасибо!\n"
+                                   "— Отличный разбор")
+        self.assertTrue(by_id["old"].body.endswith("Комментарии под видео отключены."))
+        self.assertNotIn("Комментарии", by_id["mid"].body)
+        self.assertNotIn("viewer", new.body)  # имён зрителей в записи нет
+        self.assertTrue(all(key == "test-key" for _, _, key in FakeYouTube.hits))
+        self.assertTrue(all("key" not in params for _, params, _ in FakeYouTube.hits))
+        self.assertEqual(sorted(json.loads(batch.cursor)["videos"]), ["mid", "new", "old"])
+
+    def test_small_stat_change_keeps_the_record(self):
+        [first] = self.fetch()
+        self.videos["new"] = yt_video("new", "2026-11-10T09:00:00Z", views="12399", likes="544")
+        [second] = self.fetch()
+        self.assertEqual(first.records[0].body, second.records[0].body)
+
+    def test_refresh_schedule_by_age(self):
+        [batch] = self.fetch()
+        ids = lambda days: [r.external_id for b in self.fetch(batch.cursor, now=NOW + timedelta(days=days)) for r in b.records]
+        self.assertEqual(ids(0.5), [])
+        self.assertEqual(ids(1), ["new"])            # свежее видео — раз в сутки
+        self.assertEqual(ids(7), ["new", "mid"])     # до 90 дней — раз в неделю
+        self.assertEqual(sorted(ids(90)), ["mid", "new", "old"])
+
+    def test_limit_per_run_continues_from_cursor(self):
+        [first] = self.fetch(max_videos_per_run=2)
+        self.assertEqual([r.external_id for r in first.records], ["new", "mid"])
+        [second] = self.fetch(first.cursor, max_videos_per_run=2)
+        self.assertEqual([r.external_id for r in second.records], ["old"])
+
+    def test_quota_keeps_what_is_done(self):
+        from brain.connectors.youtube import Fatal
+        self.quota_on = {"mid"}
+        got = []
+        with self.assertRaises(Fatal) as err:
+            for batch in self.connector(self.cfg).fetch(None):
+                got.append(batch)
+        self.assertIn("квота", str(err.exception))
+        self.assertEqual([r.external_id for r in got[0].records], ["new"])
+        self.assertEqual(list(json.loads(got[0].cursor)["videos"]), ["new"])
+
+    def test_missing_channel_key_and_channels(self):
+        batches = []
+        with self.assertRaises(RuntimeError) as err:
+            self.cfg["sources"]["youtube"]["channels"] = ["@mine", "@nobody"]
+            for batch in self.connector(self.cfg).fetch(None):
+                batches.append(batch)
+        self.assertIn("канал «@nobody» не найден", str(err.exception))
+        self.assertEqual(len(batches[0].records), 3)  # найденный канал обработан
+        self.cfg["sources"]["youtube"]["channels"] = []
+        with self.assertRaises(RuntimeError) as err:
+            list(self.connector(self.cfg).fetch(None))
+        self.assertIn("не указаны каналы", str(err.exception))
+        self.cfg["sources"]["youtube"].update(channels=["@mine"], key_command=[sys.executable, "-c", "raise SystemExit(1)"])
+        with self.assertRaises(RuntimeError) as err:
+            list(self.connector(self.cfg).fetch(None))
+        self.assertIn("security add-generic-password -s brain-youtube -a default -w", str(err.exception))
+
+    def test_channel_spec_and_sync(self):
+        from brain.connectors.youtube import channel_query
+        self.assertEqual(channel_query("https://www.youtube.com/@mine/videos"), {"forHandle": "@mine"})
+        self.assertEqual(channel_query(f"https://youtube.com/channel/{self.OWNER}"), {"id": self.OWNER})
+        with self.assertRaises(RuntimeError):
+            channel_query("просто слова")
+        totals = sync_mod.sync(self.cfg, self.conn, only="youtube", log=lambda *_: None)
+        self.assertEqual((totals["youtube"]["new"], totals["youtube"]["errors"]), (3, 0))
+        [hit] = search_mod.search(self.conn, "подключить MCP")
+        self.assertEqual((hit["source"], hit["title"]), ("youtube", "Видео new"))
+        totals = sync_mod.sync(self.cfg, self.conn, only="youtube", log=lambda *_: None)
+        self.assertEqual((totals["youtube"]["new"], totals["youtube"]["changed"]), (0, 0))
 
 
 class MCPTests(unittest.TestCase):

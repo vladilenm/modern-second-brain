@@ -14,9 +14,11 @@ from .gmail import GmailConnector
 from .kimi import KimiConnector
 from .notion import NotionConnector
 from .yandex_mail import YandexMailConnector
+from .youtube import YouTubeConnector
 
 ALL = {c.name: c for c in (ClaudeCodeConnector, CodexConnector, ChatGPTExportConnector, GitHubConnector,
-                           GmailConnector, YandexMailConnector, KimiConnector, NotionConnector)}
+                           GmailConnector, YandexMailConnector, KimiConnector, NotionConnector,
+                           YouTubeConnector)}
 
 
 def enabled(cfg: dict, only: str = None) -> List[Connector]:

@@ -26,6 +26,7 @@
   --side-active: #231C33; --side-accent: #A78BFA;
   --series-1: #7C3AED; --series-2: #16a070; --series-3: #eb6834; --series-4: #2a78d6;
   --series-5: #e87ba4; --series-6: #eda100; --series-7: #008b9a;
+  --source-youtube: #e02424; --source-telegram: #229ed9;
   --shadow-2: 0 4px 16px rgba(22, 18, 30, 0.08);
   --shadow-3: 0 16px 40px rgba(22, 18, 30, 0.12);
   color-scheme: light;
@@ -42,6 +43,7 @@
     --color-danger: #F27D78; --color-danger-soft: #33171A;
     --series-1: #8e72f2; --series-2: #199e70; --series-3: #d95926; --series-4: #3987e5;
     --series-5: #d55181; --series-6: #c98500; --series-7: #36b7c5;
+    --source-youtube: #ff4d4d; --source-telegram: #3fb4ee;
     --shadow-2: 0 4px 16px rgba(0, 0, 0, 0.45);
     --shadow-3: 0 16px 40px rgba(0, 0, 0, 0.55);
     color-scheme: dark;

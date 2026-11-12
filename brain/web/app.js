@@ -43,7 +43,9 @@ const SRC = DATA.sources_meta
   .sort((a, b) => a.order - b.order)
   .map((m, i) => ({ ...m, slot: i + 1, count: R.filter((r) => r.source === m.source).length }));
 const SRC_BY = Object.fromEntries(SRC.map((s) => [s.source, s]));
-const colorVar = (source) => `--series-${Math.min(7, SRC_BY[source]?.slot || 7)}`;
+// У источников с узнаваемым цветом он свой; остальные берут слот палитры.
+const OWN_COLOR = { youtube: "--source-youtube", telegram: "--source-telegram" };
+const colorVar = (source) => OWN_COLOR[source] || `--series-${Math.min(7, SRC_BY[source]?.slot || 7)}`;
 const color = (source) => `var(${colorVar(source)}, var(--color-ink-subtle))`;
 const srcName = (source) => SRC_BY[source]?.title || source;
 const projName = (key) => (PROJECTS[key] ? PROJECTS[key].name : "без проекта");

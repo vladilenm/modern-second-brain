@@ -8,6 +8,7 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 from . import config
 
@@ -18,6 +19,7 @@ PROVIDERS = (
     ("Ollama", "http://localhost:11434/v1", False),
 )
 PROFILE_FIELDS = ("model", "api_key", "json_mode", "use_env_key")
+CLI_PROVIDERS = {"codex_cli": "Codex CLI", "claude_cli": "Claude Code CLI"}
 
 
 def endpoint(value: str) -> str:
@@ -54,6 +56,8 @@ def provider_name(url: str) -> str:
 
 def processor(llm: dict) -> dict:
     """Безопасный снимок модели текущего прогона, без ключей и URL с параметрами."""
+    if llm.get("provider") in CLI_PROVIDERS:
+        return {"provider": CLI_PROVIDERS[llm["provider"]], "model": llm.get("model", "")}
     return {"provider": provider_name(llm.get("base_url", "")), "model": llm.get("model", "")}
 
 
@@ -74,7 +78,7 @@ def profile(raw: dict, url: str) -> dict:
     llm = raw.get("llm", {})
     stored = copy.deepcopy(llm.get("profiles", {}).get(url, {}))
     active_url = endpoint(llm["base_url"]) if llm.get("base_url") else ""
-    if active_url == url:
+    if active_url == url and llm.get("provider") not in CLI_PROVIDERS:
         stored.update({key: llm[key] for key in PROFILE_FIELDS if key in llm})
         stored.setdefault("use_env_key", True)
     else:
@@ -96,7 +100,12 @@ def describe(raw: dict = None) -> dict:
     for url in [current_url] + list(llm.get("profiles", {})):
         if url and url not in urls:
             urls.append(url)
-    providers = []
+    providers = [{"provider": "codex_cli", "name": "Codex CLI",
+                  "model": llm.get("model", "") if llm.get("provider") == "codex_cli"
+                  else llm.get("codex_model", "")}]
+    providers.append({"provider": "claude_cli", "name": "Claude Code CLI",
+                      "model": llm.get("model", "") if llm.get("provider") == "claude_cli"
+                      else llm.get("claude_model", "sonnet")})
     for url in urls:
         saved = profile(raw, url)
         providers.append({
@@ -106,7 +115,8 @@ def describe(raw: dict = None) -> dict:
             "custom": url not in [base for _, base, _ in PROVIDERS],
             "requires_key": any(url == base and required for _, base, required in PROVIDERS),
         })
-    return {"current": {**processor(llm), "base_url": current_url}, "providers": providers}
+    return {"current": {**processor(llm), "base_url": current_url,
+                        "provider_id": llm.get("provider", "api")}, "providers": providers}
 
 
 def candidate(payload: dict, raw: dict) -> dict:
@@ -135,6 +145,21 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def models(payload: dict) -> dict:
+    if payload.get("provider") == "claude_cli":
+        return {"models": ["sonnet", "opus", "haiku", "fable"]}
+    if payload.get("provider") == "codex_cli":
+        cache = Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex").expanduser() / "models_cache.json"
+        try:
+            data = json.loads(cache.read_text(encoding="utf-8"))
+            entries = data["models"]
+            if not isinstance(entries, list):
+                raise ValueError
+            names = list(dict.fromkeys(item["slug"] for item in entries
+                                      if isinstance(item, dict) and item.get("visibility") == "list"
+                                      and isinstance(item.get("slug"), str) and item["slug"].strip()))
+        except (OSError, ValueError, KeyError, TypeError):
+            raise RuntimeError("Не удалось прочитать список моделей Codex. Введи название вручную.") from None
+        return {"models": names}
     settings = candidate(payload, read_raw())
     headers = {"Accept": "application/json"}
     secret = api_key(settings)
@@ -173,19 +198,38 @@ def models(payload: dict) -> dict:
 
 def save(payload: dict) -> dict:
     raw = read_raw()  # Сохранить все прочие настройки, включая правки с момента открытия окна.
-    chosen = candidate(payload, raw)
-    if not chosen.get("model"):
-        raise ValueError("Выбери модель из списка или введи её название.")
-    if any(chosen["base_url"] == base and required for _, base, required in PROVIDERS) and not api_key(chosen):
-        raise ValueError("Для этого провайдера нужен API-ключ.")
     llm = raw.setdefault("llm", {})
-    profiles = llm.setdefault("profiles", {})
-    old_url = endpoint(llm["base_url"]) if llm.get("base_url") else ""
-    if old_url:
-        profiles[old_url] = profile(raw, old_url)
-    profiles[chosen["base_url"]] = {key: chosen[key] for key in PROFILE_FIELDS if key in chosen}
-    llm.update({key: chosen.get(key, "" if key == "api_key" else None) for key in PROFILE_FIELDS})
-    llm["base_url"] = chosen["base_url"]
+    provider = payload.get("provider")
+    if provider is not None and not isinstance(provider, str):
+        raise ValueError("Провайдер должен быть строкой.")
+    if provider in CLI_PROVIDERS:
+        model = payload.get("model", "")
+        if not isinstance(model, str) or not model.strip() or any(c in model for c in "\n\r\0"):
+            raise ValueError("Укажи название модели без переносов.")
+        old_url = endpoint(llm["base_url"]) if llm.get("base_url") else ""
+        previous = llm.get("provider")
+        if previous in CLI_PROVIDERS:
+            llm["codex_model" if previous == "codex_cli" else "claude_model"] = llm.get("model", "")
+        elif old_url:
+            llm.setdefault("profiles", {})[old_url] = profile(raw, old_url)
+        llm.update(provider=provider, model=model.strip())
+        llm["codex_model" if provider == "codex_cli" else "claude_model"] = model.strip()
+    else:
+        chosen = candidate(payload, raw)
+        if not chosen.get("model"):
+            raise ValueError("Выбери модель из списка или введи её название.")
+        if any(chosen["base_url"] == base and required for _, base, required in PROVIDERS) and not api_key(chosen):
+            raise ValueError("Для этого провайдера нужен API-ключ.")
+        profiles = llm.setdefault("profiles", {})
+        old_url = endpoint(llm["base_url"]) if llm.get("base_url") else ""
+        if llm.get("provider") in CLI_PROVIDERS:
+            llm["codex_model" if llm["provider"] == "codex_cli" else "claude_model"] = llm.get("model", "")
+        elif old_url:
+            profiles[old_url] = profile(raw, old_url)
+        llm["provider"] = "api"
+        profiles[chosen["base_url"]] = {key: chosen[key] for key in PROFILE_FIELDS if key in chosen}
+        llm.update({key: chosen.get(key, "" if key == "api_key" else None) for key in PROFILE_FIELDS})
+        llm["base_url"] = chosen["base_url"]
     path = config.config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = None

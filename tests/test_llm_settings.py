@@ -33,7 +33,7 @@ class ModelSettingsTests(unittest.TestCase):
     def test_safe_description_and_cli_never_return_keys(self):
         with patch.dict(os.environ, {"BRAIN_LLM_API_KEY": "env-secret"}):
             description = llm_settings.describe()
-            current = description["providers"][0]
+            current = next(p for p in description["providers"] if p.get("base_url") == "https://simple-claw.ru/v1")
             self.assertTrue(current["has_api_key"])
             self.assertTrue(current["key_from_env"])
             output = subprocess.check_output([sys.executable, "-m", "brain.cli", "model", "show"], text=True)
@@ -54,6 +54,32 @@ class ModelSettingsTests(unittest.TestCase):
         self.assertEqual(result["current"]["model"], "new-model")
         self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
         self.assertEqual(list(self.path.parent.glob(".config.json.*.tmp")), [])
+
+    def test_codex_cli_can_be_selected_without_api_credentials_and_preserves_api_profile(self):
+        llm_settings.save({"provider": "codex_cli", "model": "gpt-6-luna"})
+        stored = json.loads(self.path.read_text())["llm"]
+        self.assertEqual(stored["provider"], "codex_cli")
+        self.assertEqual(stored["batch_limit"], 7)
+        description = llm_settings.describe()
+        self.assertEqual(description["current"]["provider"], "Codex CLI")
+        self.assertEqual(description["current"]["model"], "gpt-6-luna")
+        self.assertEqual(description["providers"][0]["provider"], "codex_cli")
+        llm_settings.save({"base_url": "https://simple-claw.ru/v1"})
+        restored = config.load()["llm"]
+        self.assertEqual(restored["model"], "old-model")
+        self.assertEqual(restored["api_key"], "first-secret")
+        self.assertEqual(llm_settings.describe()["providers"][0]["model"], "gpt-6-luna")
+
+    def test_codex_models_are_read_from_codex_cache_without_hidden_entries(self):
+        cache = self.path.parent / "models_cache.json"
+        cache.write_text(json.dumps({"models": [
+            {"slug": "gpt-first", "visibility": "list"},
+            {"slug": "gpt-hidden", "visibility": "hide"},
+            {"slug": "gpt-next", "visibility": "list"},
+        ]}))
+        with patch.dict(os.environ, {"CODEX_HOME": str(self.path.parent)}):
+            self.assertEqual(llm_settings.models({"provider": "codex_cli"}),
+                             {"models": ["gpt-first", "gpt-next"]})
 
     def test_switching_restores_profiles_and_does_not_reuse_env_key(self):
         with patch.dict(os.environ, {"BRAIN_LLM_API_KEY": "env-secret"}):
@@ -83,10 +109,19 @@ class ModelSettingsTests(unittest.TestCase):
             {"base_url": "https://api.openai.com/v1", "model": "x"},
             {"base_url": "https://simple-claw.ru/v1", "model": ""},
             {"base_url": "https://simple-claw.ru/v1", "json_mode": "yes"},
+            {"provider": [], "model": "x"},
         ]:
             with self.subTest(payload=payload), self.assertRaises(ValueError):
                 llm_settings.save(payload)
             self.assertEqual(self.path.read_bytes(), before)
+
+    def test_invalid_provider_returns_json_error_from_cli(self):
+        before = self.path.read_bytes()
+        result = subprocess.run([sys.executable, "-m", "brain.cli", "model", "save"],
+                                input=json.dumps({"provider": [], "model": "x"}), text=True, capture_output=True)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("error", json.loads(result.stdout))
+        self.assertEqual(self.path.read_bytes(), before)
 
     def test_failed_atomic_replace_preserves_config_and_removes_temporary(self):
         before = self.path.read_bytes()

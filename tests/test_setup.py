@@ -14,6 +14,10 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from brain import config, secret_store  # noqa: E402
+from brain.connectors.base import Connector, Field  # noqa: E402
+from brain.connectors.chatgpt_export import ChatGPTExportConnector  # noqa: E402
+from brain.connectors.claude_code import ClaudeCodeConnector  # noqa: E402
+from test_brain import make_cfg, write_jsonl  # noqa: E402
 
 
 def fake_command(tmp: Path, body: str) -> Path:
@@ -85,6 +89,47 @@ class ConfigWriteTests(unittest.TestCase):
         self.path.write_text("[]")
         with self.assertRaises(ValueError):
             config.read_raw()
+
+
+class SetupContractTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.cfg = make_cfg(self.tmp)
+
+    def test_file_source_counts_conversations(self):
+        conn = ClaudeCodeConnector(self.cfg)
+        self.assertIsNone(conn.detect())
+        with self.assertRaises(RuntimeError) as ctx:
+            conn.check()
+        self.assertIn("ничего не найдено", str(ctx.exception))
+        for name in ("a", "b"):
+            write_jsonl(self.tmp / "claude" / "proj" / f"{name}.jsonl", [{"type": "user"}])
+        self.assertEqual(conn.detect(), "2 разговора")
+        self.assertEqual(conn.check(), "2 разговора")
+
+    def test_chatgpt_counts_archives_in_inbox(self):
+        conn = ChatGPTExportConnector(self.cfg)
+        self.assertIsNone(conn.detect())
+        (self.tmp / "inbox").mkdir()
+        (self.tmp / "inbox" / "export.zip").write_bytes(b"")
+        self.assertEqual(conn.detect(), "1 архив")
+        self.assertIn("Export data", conn.setup_help)
+
+    def test_secret_ref_defaults_and_account_from_field(self):
+        class Fake(Connector):
+            name = "fake"
+            secret_service = "brain-fake"
+        token = Field("token", "Токен", kind="secret")
+        mail = Field("password", "Пароль", kind="secret", account_from="address")
+        self.cfg["sources"]["fake"] = {"address": "me@x.ru"}
+        self.assertEqual(Fake(self.cfg).secret_ref(token), ("brain-fake", "default"))
+        self.assertEqual(Fake(self.cfg).secret_ref(mail), ("brain-fake", "me@x.ru"))
+        self.cfg["sources"]["fake"].update(keychain_service="other", keychain_account="work")
+        self.assertEqual(Fake(self.cfg).secret_ref(token), ("other", "work"))
+
+    def test_plain_connector_needs_no_setup(self):
+        self.assertIsNone(Connector(self.cfg).detect())
+        self.assertEqual(Connector(self.cfg).check(), "настройка не требуется")
 
 
 if __name__ == "__main__":

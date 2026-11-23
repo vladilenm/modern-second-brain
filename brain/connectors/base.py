@@ -13,7 +13,7 @@ import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Iterator, List, Optional
+from typing import Iterable, Iterator, List, Optional, Tuple
 
 MAX_MESSAGE_CHARS = 20000
 # launchd не передаёт PATH Homebrew, поэтому zstd ищем и там.
@@ -40,6 +40,17 @@ class Batch:
     cursor: str
 
 
+@dataclass(frozen=True)
+class Field:
+    """Что мастер настройки спрашивает у человека."""
+    key: str                # ключ в sources.<name>; у секрета — только имя, в конфиг он не пишется
+    label: str              # «Адрес почты», «Каналы»
+    kind: str = "text"      # text | list | secret
+    help: str = ""          # подсказка строкой над вопросом
+    required: bool = False
+    account_from: str = ""  # для secret: поле, чьё значение — аккаунт в связке ключей (у почты — address)
+
+
 class Connector:
     """Общее у всех коннекторов: ключ настроек, источник записей и как его показывать людям."""
 
@@ -49,6 +60,10 @@ class Connector:
     about = ""       # что лежит в источнике — для описания MCP-сервера
     empty_hint = ""  # что сделать, если записей пока нет; панель показывает это вместо пустой строки
     default_every_minutes = 0  # 0 — в каждом прогоне sync
+    # Настройка в мастере (brain setup): что спросить, где взять ключ, как найти и проверить источник.
+    setup_fields: Tuple[Field, ...] = ()
+    setup_help = ""
+    secret_service = ""  # сервис в связке ключей, если у источника есть секрет
 
     def __init__(self, cfg: dict):
         self.cfg = cfg
@@ -63,6 +78,21 @@ class Connector:
         """Своё правило исключения записей сверх общего exclude_projects."""
         return False
 
+    def secret_ref(self, field: Field) -> Tuple[str, str]:
+        """Где в связке ключей лежит секрет поля: (сервис, аккаунт)."""
+        service = self.settings.get("keychain_service") or self.secret_service
+        if field.account_from:
+            return service, str(self.settings.get(field.account_from) or "")
+        return service, self.settings.get("keychain_account") or "default"
+
+    def detect(self) -> Optional[str]:
+        """Что уже есть на компьютере, одной строкой («412 разговоров»); None — ничего. Без записи в базу."""
+        return None
+
+    def check(self) -> str:
+        """Пробное подключение без записи в базу: строка для показа или RuntimeError с причиной."""
+        return "настройка не требуется"
+
 
 class FileConnector(Connector):
     """Коннектор к источнику, который лежит файлами на диске.
@@ -75,6 +105,18 @@ class FileConnector(Connector):
     # Один файл — одна запись. Тогда разница между просмотренными файлами и записями —
     # служебные сессии без разговора, и панель её показывает.
     one_record_per_file = True
+    detect_forms = ("разговор", "разговора", "разговоров")
+
+    def detect(self) -> Optional[str]:
+        from ..context import words  # context тянет поиск и проекты — импорт по месту
+        count = sum(1 for _ in self.files())
+        return words(count, self.detect_forms) if count else None
+
+    def check(self) -> str:
+        found = self.detect()
+        if not found:
+            raise RuntimeError("ничего не найдено в " + ", ".join(home_relative(r) for r in self.roots()))
+        return found
 
     @property
     def idle_seconds(self) -> float:

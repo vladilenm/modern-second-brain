@@ -23,7 +23,7 @@ from html.parser import HTMLParser
 from typing import Iterator, List, Optional
 
 from ..timeutil import to_iso
-from .base import ApiConnector, Batch, Record, clip, first_line
+from .base import ApiConnector, Batch, Field, Record, clip, first_line
 
 BASE = "https://t.me"
 CHANNEL = re.compile(r"^[A-Za-z][A-Za-z0-9_]{3,31}$")
@@ -144,6 +144,23 @@ class TelegramConnector(ApiConnector):
     about = "посты его публичных Telegram-каналов"
     default_every_minutes = 60
     empty_hint = "Укажи свои публичные каналы в sources.telegram.channels (README, раздел «Telegram»)."
+    setup_fields = (Field("channels", "Свои публичные каналы", kind="list", required=True,
+                          help="имя, @имя или ссылка t.me/имя, несколько — через запятую"),)
+    setup_help = ("Читается публичная страница t.me/s/<канал>: вход и ключи не нужны. "
+                  "Закрытые каналы, «Избранное» и переписки так не читаются.")
+
+    def check(self) -> str:
+        specs = [c for c in self.settings.get("channels") or [] if str(c).strip()]
+        if not specs:
+            raise RuntimeError("Telegram: не указаны каналы")
+        titles = []
+        for spec in specs:
+            name = channel_name(str(spec))
+            data = self.page(name, None)
+            if not data["posts"]:
+                raise RuntimeError(f"Telegram: у @{name} не видно постов — канал закрыт или предпросмотр выключен")
+            titles.append(data["title"] or "@" + name)
+        return "каналы найдены: " + ", ".join(titles)
 
     def page(self, channel: str, before: Optional[int]) -> dict:
         base = (self.settings.get("api_base") or BASE).rstrip("/")

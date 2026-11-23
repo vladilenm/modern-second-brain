@@ -1,4 +1,4 @@
-"""Командная строка: brain sync | search | recent | project | show | status | summarize | mcp."""
+"""Командная строка: brain setup | sync | search | recent | project | show | status | summarize | mcp | autostart | update."""
 from __future__ import annotations
 
 import argparse
@@ -183,6 +183,15 @@ def cmd_update(args, cfg) -> int:
     return 0
 
 
+def cmd_setup(args, cfg) -> int:
+    from . import ui, wizard
+    try:
+        return wizard.run(ui.make_ui(), only=args.source)
+    except (KeyboardInterrupt, EOFError):
+        print("\nНастройка прервана. Пройденные шаги сохранены; продолжить — brain setup.")
+        return 130
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="brain", description="Второй мозг: поиск по прошлой работе — "
                                                           "разговорам с ИИ и подключённым источникам")
@@ -238,6 +247,10 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("model", help="модель пересказа: настройки и список моделей (JSON)")
     s.add_argument("action", choices=("show", "models", "save"))
     s.set_defaults(func=cmd_model)
+
+    s = sub.add_parser("setup", help="мастер настройки: источники, модель, автозапуск")
+    s.add_argument("source", nargs="?", help="настроить один источник: " + ", ".join(connectors.ALL))
+    s.set_defaults(func=cmd_setup)
 
     s = sub.add_parser("autostart", help="фоновая синхронизация каждые 15 минут: on, off, status")
     s.add_argument("action", choices=("on", "off", "status"))

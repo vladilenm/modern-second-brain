@@ -16,7 +16,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from brain import autostart, cli, config, secret_store, ui  # noqa: E402
+from brain import autostart, cli, config, connectors, secret_store, ui, wizard  # noqa: E402
 from brain.connectors.base import Connector, Field  # noqa: E402
 from brain.connectors.chatgpt_export import ChatGPTExportConnector  # noqa: E402
 from brain.connectors.claude_code import ClaudeCodeConnector  # noqa: E402
@@ -249,6 +249,135 @@ class CliCommandTests(unittest.TestCase):
         with mock.patch.object(autostart, "enabled", return_value=False), redirect_stdout(out):
             self.assertEqual(cli.main(["autostart", "status"]), 0)
         self.assertIn("выключен", out.getvalue())
+
+
+class FakeFiles(Connector):
+    name = source = "fake_files"
+    title = "Файлы"
+
+    def detect(self):
+        return "3 разговора"
+
+    def check(self):
+        return "3 разговора"
+
+
+class FakeToken(Connector):
+    name = source = "fake_token"
+    title = "Сервис"
+    setup_help = "Возьми токен на example.com"
+    secret_service = "brain-fake"
+    setup_fields = (Field("channels", "Каналы", kind="list", required=True), Field("token", "Токен", kind="secret"))
+    results: list = []  # что вернёт check по очереди: строка — успех, исключение — ошибка
+
+    def check(self):
+        result = FakeToken.results.pop(0)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+
+class FakeActions:
+    def __init__(self):
+        self.calls = []
+
+    def enable_autostart(self):
+        self.calls.append("autostart")
+        return "включён"
+
+    def disable_autostart(self):
+        self.calls.append("autostart off")
+        return "выключен"
+
+    def autostart_enabled(self):
+        return False
+
+    def build_menubar(self):
+        self.calls.append("menubar")
+
+    def first_sync(self):
+        self.calls.append("sync")
+
+
+class WizardTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.path = self.dir / "config.json"
+        self.secrets = {}
+        for patcher in (
+            mock.patch.dict(os.environ, {"BRAIN_CONFIG": str(self.path), "BRAIN_LLM_API_KEY": "",
+                                         "BRAIN_DB": str(self.dir / "brain.db")}),
+            mock.patch.dict(connectors.ALL, {"fake_files": FakeFiles, "fake_token": FakeToken}, clear=True),
+            mock.patch.object(wizard.secret_store, "exists", lambda s, a: (s, a) in self.secrets),
+            mock.patch.object(wizard.secret_store, "put",
+                              lambda s, a, v: self.secrets.__setitem__((s, a), secret_store.check_secret(v))),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        FakeToken.results = []
+        self.actions = FakeActions()
+
+    def stored(self):
+        return json.loads(self.path.read_text())["sources"]
+
+    def test_first_run_full_pass(self):
+        FakeToken.results = [RuntimeError("нет доступа"), "ок"]
+        term, out = text_ui(
+            "2", "",          # список: включить «Сервис», дальше
+            "a, b",           # каналы
+            "1",              # проверка упала → попробовать снова
+            "",               # каналы — Enter оставляет «a, b»
+            "н",              # токен уже сохранён — не заменять
+            "",               # модель: пропустить (по умолчанию)
+            "", "", "н",      # автозапуск — да, значок — нет, забрать сейчас — нет
+            secrets=["tok-123"])
+        self.assertEqual(wizard.run(term, actions=self.actions), 0)
+        self.assertEqual(self.stored(), {"fake_files": {"enabled": True},
+                                         "fake_token": {"channels": ["a", "b"], "enabled": True}})
+        self.assertEqual(self.secrets, {("brain-fake", "default"): "tok-123"})
+        self.assertEqual(self.actions.calls, ["autostart"])
+        text = out.getvalue()
+        self.assertIn("Возьми токен на example.com", text)
+        self.assertIn("✗ нет доступа", text)
+        self.assertIn("✓ ок", text)
+        self.assertIn("claude mcp add -s user brain --", text)
+        self.assertNotIn("tok-123", text)
+
+    def test_unchecked_and_skipped_sources_are_disabled(self):
+        self.path.write_text(json.dumps({"sources": {"fake_files": {"enabled": True}, "fake_token": {"enabled": True}}}))
+        FakeToken.results = [RuntimeError("нет доступа")]
+        term, _ = text_ui("1", "", "x", "2", "", "н", "", "н", secrets=["tok"])
+        wizard.run(term, actions=self.actions)
+        self.assertEqual(self.stored()["fake_files"], {"enabled": False})
+        self.assertEqual(self.stored()["fake_token"], {"enabled": False})
+
+    def test_force_enable_after_failed_check(self):
+        FakeToken.results = [RuntimeError("нет сети")]
+        term, _ = text_ui("x", "3", secrets=["tok"])
+        self.assertEqual(wizard.run(term, only="fake_token", actions=self.actions), 0)
+        self.assertEqual(self.stored()["fake_token"], {"channels": ["x"], "enabled": True})
+
+    def test_required_field_is_asked_again(self):
+        FakeToken.results = ["ок"]
+        term, out = text_ui("", "y", secrets=["tok"])
+        wizard.run(term, only="fake_token", actions=self.actions)
+        self.assertIn("Без этого источник не заработает", out.getvalue())
+        self.assertEqual(self.stored()["fake_token"]["channels"], ["y"])
+
+    def test_bad_secret_is_asked_again(self):
+        FakeToken.results = ["ок"]
+        term, out = text_ui("x", secrets=["пароль", "tok"])
+        wizard.run(term, only="fake_token", actions=self.actions)
+        self.assertIn("не подошло", out.getvalue())
+        self.assertEqual(self.secrets, {("brain-fake", "default"): "tok"})
+
+    def test_unknown_source(self):
+        term, out = text_ui()
+        self.assertEqual(wizard.run(term, only="nope", actions=self.actions), 1)
+        self.assertIn("fake_files", out.getvalue())
+
+    def test_split_list(self):
+        self.assertEqual(wizard.split_list(" a, b ,,c\nd "), ["a", "b", "c", "d"])
 
 
 if __name__ == "__main__":

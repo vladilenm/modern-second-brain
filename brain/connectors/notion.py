@@ -15,7 +15,7 @@ import uuid
 from collections import deque
 from typing import Iterator, Optional
 
-from .. import keychain
+from .. import secret_store
 from ..redact import CARD_MASK, MASK
 from .base import ApiConnector, Batch, Record
 
@@ -188,10 +188,10 @@ class NotionConnector(ApiConnector):
         service = self.settings.get("keychain_service") or "brain-notion"
         account = self.settings.get("keychain_account") or "default"
         try:
-            secret = keychain.password(service, account)
+            secret = secret_store.get(service, account)
         except RuntimeError:
             raise RuntimeError("Notion: нет API-токена; создай его в Developer portal и сохрани командой `" +
-                               keychain.add_command(service, account) + "`") from None
+                               secret_store.add_command(service, account) + "`") from None
         api = NotionAPI(self.settings.get("api_base") or API_BASE, secret)
         try:
             pos = json.loads(cursor) if cursor else {}

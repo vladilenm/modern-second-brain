@@ -17,7 +17,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from brain import db, keychain  # noqa: E402
+from brain import db, secret_store  # noqa: E402
 from brain import sync as sync_mod  # noqa: E402
 from brain.connectors import mail, mailbox, mailparse, yandex_mail  # noqa: E402
 from brain.connectors.gmail import GmailConnector  # noqa: E402
@@ -28,14 +28,14 @@ from brain.timeutil import to_iso  # noqa: E402
 from test_brain import make_cfg  # noqa: E402
 
 
-class KeychainTests(unittest.TestCase):
+class SecretReadTests(unittest.TestCase):
     def test_reads_password(self):
         command = [sys.executable, "-c", "print('секрет')"]
-        self.assertEqual(keychain.password("brain-mail", "me@x.ru", command), "секрет")
+        self.assertEqual(secret_store.get("brain-mail", "me@x.ru", command), "секрет")
 
     def test_missing_password_explains_how_to_add(self):
         with self.assertRaises(RuntimeError) as ctx:
-            keychain.password("brain-mail", "me@x.ru", [sys.executable, "-c", "import sys; sys.exit(44)"])
+            secret_store.get("brain-mail", "me@x.ru", [sys.executable, "-c", "import sys; sys.exit(44)"])
         self.assertIn("security add-generic-password -s brain-mail -a me@x.ru -w", str(ctx.exception))
 
 

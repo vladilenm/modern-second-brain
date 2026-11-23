@@ -18,7 +18,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from typing import Iterator, List, Optional, Tuple
 
-from .. import keychain
+from .. import secret_store
 from ..timeutil import parse, to_iso
 from .base import ApiConnector, Batch, Record, clip
 
@@ -251,10 +251,10 @@ class YouTubeConnector(ApiConnector):
         service = self.settings.get("keychain_service") or "brain-youtube"
         account = self.settings.get("keychain_account") or "default"
         try:
-            key = keychain.password(service, account, self.settings.get("key_command"))
+            key = secret_store.get(service, account, self.settings.get("key_command"))
         except RuntimeError:
             raise RuntimeError("YouTube: нет ключа API; создай его в Google Cloud и сохрани командой `"
-                               + keychain.add_command(service, account) + "`") from None
+                               + secret_store.add_command(service, account) + "`") from None
         api = YouTubeAPI(self.settings.get("api_base") or API_BASE, key)
         try:
             pos = json.loads(cursor) if cursor else {}

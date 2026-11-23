@@ -106,7 +106,7 @@ class NotionTests(unittest.TestCase):
         patcher = mock.patch.dict(connectors.ALL, {"notion": notion.NotionConnector})
         patcher.start()
         self.addCleanup(patcher.stop)
-        patcher = mock.patch("brain.keychain.password", return_value=TOKEN)
+        patcher = mock.patch("brain.secret_store.get", return_value=TOKEN)
         patcher.start()
         self.addCleanup(patcher.stop)
         patcher = mock.patch.object(notion, "REQUEST_INTERVAL", 0)

@@ -12,7 +12,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import Iterator, List, Optional, Set, Tuple
 
-from .. import keychain
+from .. import secret_store
 from .base import ApiConnector, Batch, Record
 from .mailbox import AuthFailed, Fetched, Mailbox
 from .mailparse import MailMessage, parse, render_thread
@@ -42,7 +42,7 @@ class MailConnector(ApiConnector):
         if not address:
             raise RuntimeError(f"{self.title}: в config.json не задан address")
         try:
-            secret = keychain.password(self.settings.get("keychain_service") or KEYCHAIN_SERVICE, address,
+            secret = secret_store.get(self.settings.get("keychain_service") or KEYCHAIN_SERVICE, address,
                                        self.settings.get("password_command"))
             box = self.open_mailbox(address, secret)
         except AuthFailed:

@@ -155,6 +155,34 @@ def cmd_model(args, cfg) -> int:
         return 1
 
 
+def cmd_autostart(args, cfg) -> int:
+    from . import autostart
+    try:
+        print({"on": autostart.enable, "off": autostart.disable, "status": autostart.status}[args.action]())
+    except RuntimeError as exc:
+        print(f"Не получилось: {exc}")
+        return 1
+    return 0
+
+
+def cmd_update(args, cfg) -> int:
+    import subprocess
+    from . import autostart
+    root = config.ROOT
+    if not (root / ".git").exists():
+        print(f"{root} поставлен не через git: обнови его командой установки из README.")
+        return 1
+    out = subprocess.run(["git", "-C", str(root), "pull", "--ff-only"], capture_output=True, text=True)
+    print((out.stdout + out.stderr).strip())
+    if out.returncode != 0:
+        print("Не обновилось: в папке есть свои правки или ветка разошлась. Данные не тронуты.")
+        return 1
+    if autostart.enabled():
+        autostart.enable(root)  # пути могли поменяться вместе с кодом
+    print("Готово. Перезапусти Claude Code, Codex и другие MCP-клиенты, чтобы они подхватили новые инструменты.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="brain", description="Второй мозг: поиск по прошлой работе — "
                                                           "разговорам с ИИ и подключённым источникам")
@@ -210,6 +238,13 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("model", help="модель пересказа: настройки и список моделей (JSON)")
     s.add_argument("action", choices=("show", "models", "save"))
     s.set_defaults(func=cmd_model)
+
+    s = sub.add_parser("autostart", help="фоновая синхронизация каждые 15 минут: on, off, status")
+    s.add_argument("action", choices=("on", "off", "status"))
+    s.set_defaults(func=cmd_autostart)
+
+    s = sub.add_parser("update", help="обновить второй мозг (git pull) без потери данных")
+    s.set_defaults(func=cmd_update)
     return p
 
 

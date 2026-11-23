@@ -5,16 +5,18 @@ import curses
 import io
 import json
 import os
+import plistlib
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from brain import config, secret_store, ui  # noqa: E402
+from brain import autostart, cli, config, secret_store, ui  # noqa: E402
 from brain.connectors.base import Connector, Field  # noqa: E402
 from brain.connectors.chatgpt_export import ChatGPTExportConnector  # noqa: E402
 from brain.connectors.claude_code import ClaudeCodeConnector  # noqa: E402
@@ -185,6 +187,68 @@ class ChecklistTests(unittest.TestCase):
         self.assertEqual(state.pos, 0)
         self.assertTrue(state.press(10))
         self.assertEqual(state.lines()[0], "> [x] A")
+
+
+class AutostartTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.calls = self.tmp / "calls"
+        fake = fake_command(self.tmp, f'echo "$@" >> "{self.calls}"\n[ "$1" = print ] && exit "${{FAKE_PRINT_RC:-1}}"\nexit 0\n')
+        for name, value in (("LAUNCHCTL", str(fake)), ("AGENTS", self.tmp / "agents"), ("LOG", self.tmp / "logs" / "sync.log")):
+            patcher = mock.patch.object(autostart, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def log(self):
+        return self.calls.read_text().splitlines() if self.calls.exists() else []
+
+    def test_enable_writes_plist_with_this_installation_paths(self):
+        autostart.enable(Path("/opt/brain"))
+        data = plistlib.loads((self.tmp / "agents" / "local.brain.sync.plist").read_bytes())
+        self.assertEqual(data["Label"], "local.brain.sync")
+        self.assertEqual(data["ProgramArguments"], ["/opt/brain/bin/brain", "sync"])
+        self.assertEqual(data["StandardOutPath"], str(self.tmp / "logs" / "sync.log"))
+        self.assertEqual([d["Minute"] for d in data["StartCalendarInterval"]], [0, 15, 30, 45])
+        uid = os.getuid()
+        self.assertIn(f"bootstrap gui/{uid} {self.tmp}/agents/local.brain.sync.plist", self.log())
+
+    def test_enable_removes_legacy_agent(self):
+        legacy = self.tmp / "agents" / "com.vladilen.brain-sync.plist"
+        legacy.parent.mkdir(parents=True)
+        legacy.write_text("старый")
+        autostart.enable(Path("/opt/brain"))
+        self.assertFalse(legacy.exists())
+        self.assertIn(f"bootout gui/{os.getuid()}/com.vladilen.brain-sync", self.log())
+
+    def test_disable_and_status(self):
+        autostart.enable(Path("/opt/brain"))
+        autostart.disable()
+        self.assertFalse((self.tmp / "agents" / "local.brain.sync.plist").exists())
+        self.assertEqual(autostart.status(), "автозапуск выключен")
+        with mock.patch.dict(os.environ, {"FAKE_PRINT_RC": "0"}):
+            self.assertTrue(autostart.enabled())
+            self.assertIn("каждые 15 минут", autostart.status())
+
+    def test_enable_reports_launchd_refusal(self):
+        refuse = fake_command(self.tmp, '[ "$1" = bootstrap ] && { echo "Bootstrap failed: 5" >&2; exit 5; }\nexit 0\n')
+        with mock.patch.object(autostart, "LAUNCHCTL", str(refuse)):
+            with self.assertRaises(RuntimeError) as ctx:
+                autostart.enable(Path("/opt/brain"))
+        self.assertIn("launchctl bootstrap", str(ctx.exception))
+
+
+class CliCommandTests(unittest.TestCase):
+    def test_update_needs_git_checkout(self):
+        out = io.StringIO()
+        with mock.patch.object(config, "ROOT", Path(tempfile.mkdtemp())), redirect_stdout(out):
+            self.assertEqual(cli.main(["update"]), 1)
+        self.assertIn("не через git", out.getvalue())
+
+    def test_autostart_status_command(self):
+        out = io.StringIO()
+        with mock.patch.object(autostart, "enabled", return_value=False), redirect_stdout(out):
+            self.assertEqual(cli.main(["autostart", "status"]), 0)
+        self.assertIn("выключен", out.getvalue())
 
 
 if __name__ == "__main__":

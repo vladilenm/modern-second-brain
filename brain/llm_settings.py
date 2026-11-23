@@ -4,7 +4,6 @@ from __future__ import annotations
 import copy
 import json
 import os
-import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -58,11 +57,8 @@ def processor(llm: dict) -> dict:
 
 
 def read_raw() -> dict:
-    path = config.config_path()
-    if not path.exists():
-        return {}
-    data = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(data, dict) or not isinstance(data.get("llm", {}), dict):
+    data = config.read_raw()
+    if not isinstance(data.get("llm", {}), dict):
         raise ValueError("В config.json ожидается объект настроек с секцией llm.")
     profiles = data.get("llm", {}).get("profiles", {})
     if not isinstance(profiles, dict) or any(not isinstance(p, dict) for p in profiles.values()):
@@ -186,20 +182,5 @@ def save(payload: dict) -> dict:
     profiles[chosen["base_url"]] = {key: chosen[key] for key in PROFILE_FIELDS if key in chosen}
     llm.update({key: chosen.get(key, "" if key == "api_key" else None) for key in PROFILE_FIELDS})
     llm["base_url"] = chosen["base_url"]
-    path = config.config_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = None
-    try:
-        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
-                                         prefix=f".{path.name}.", suffix=".tmp", delete=False) as out:
-            temporary = out.name
-            os.fchmod(out.fileno(), 0o600)
-            json.dump(raw, out, ensure_ascii=False, indent=2)
-            out.write("\n")
-            out.flush()
-            os.fsync(out.fileno())
-        os.replace(temporary, path)
-    finally:
-        if temporary and os.path.exists(temporary):
-            os.unlink(temporary)
+    config.write_raw(raw)
     return describe(raw)

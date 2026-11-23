@@ -1,15 +1,19 @@
 // BrainBar — значок второго мозга в строке меню macOS.
-// Раз в 2 секунды читает ~/brain/data/status.json (его пишет brain sync) и показывает,
+// Раз в 2 секунды читает data/status.json в папке второго мозга (его пишет brain sync) и показывает,
 // что происходит: забирает разговоры (↻), пересказывает (12/40), ошибка (!) или всё спокойно.
 // Сборка: menubar/build.sh. Проверка без интерфейса: BrainBar --dump.
 import AppKit
 import ServiceManagement
 
 let home = NSHomeDirectory()
-let brainDir = home + "/brain"
+/// Папку проекта вписывает menubar/build.sh в Info.plist (BrainDir); сборка без неё — ~/brain.
+let brainDir: String = {
+    if let dir = Bundle.main.object(forInfoDictionaryKey: "BrainDir") as? String, !dir.isEmpty { return dir }
+    return home + "/brain"
+}()
 let statusPath = brainDir + "/data/status.json"
 let logPath = home + "/Library/Logs/brain-sync.log"
-let agentLabel = "com.vladilen.brain-sync"
+let agentLabel = "local.brain.sync"  // brain/autostart.py, LABEL
 let syncInterval: TimeInterval = 15 * 60  // агент запускается в :00, :15, :30 и :45
 let builtinSources: [(key: String, name: String)] = [("claude_code", "Claude Code"), ("codex", "Codex"), ("chatgpt", "ChatGPT")]
 

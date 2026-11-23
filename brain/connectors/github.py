@@ -22,7 +22,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Iterator, List, Optional, Tuple
 
 from ..timeutil import to_iso
-from .base import ApiConnector, Batch, Record, clip
+from .base import ApiConnector, Batch, Field, Record, clip
 
 DISCUSSION_BATCH = 20
 # launchd запускает sync с PATH=/usr/bin:/bin:/usr/sbin:/sbin — Homebrew туда не попадает.
@@ -125,6 +125,22 @@ class GitHubConnector(ApiConnector):
     source = "github"
     title = "GitHub"
     about = "PR, issues, коммиты и README на GitHub"
+    setup_fields = (Field("exclude_repos", "Не брать репозитории", kind="list",
+                          help="шаблоны owner/name через запятую, можно со *: owner/tmp-*. Enter — брать все"),)
+    setup_help = ("Нужна программа gh, вошедшая в твой аккаунт: brew install gh, затем gh auth login. "
+                  "Берутся PR и issues с твоим участием, твои коммиты по месяцам и README за 2 года, без форков.")
+
+    def detect(self) -> Optional[str]:
+        try:
+            read_token(self.settings.get("token_command"))
+        except RuntimeError:
+            return None
+        return "вход в gh выполнен"
+
+    def check(self) -> str:
+        api = GitHubAPI(self.settings.get("api_base") or "https://api.github.com",
+                        read_token(self.settings.get("token_command")))
+        return "аккаунт " + api.get("/user")["login"]
 
     def excludes(self, project: Optional[str]) -> bool:
         patterns = self.settings.get("exclude_repos") or []

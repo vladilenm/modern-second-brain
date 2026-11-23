@@ -72,6 +72,10 @@ class ChatGPTExportConnector(FileConnector):
     empty_hint = ("Пока пусто. Сделай экспорт в ChatGPT (Settings → Data controls → Export data) "
                   "и положи архив в ~/brain/inbox.")
     one_record_per_file = False  # в одном архиве — все чаты
+    detect_forms = ("архив", "архива", "архивов")
+    setup_help = ("API для истории у OpenAI нет. В ChatGPT: Settings → Data controls → Export data. "
+                  "Архив из письма положи в папку inbox внутри папки второго мозга — следующая "
+                  "синхронизация заберёт новые и изменившиеся чаты.")
 
     def roots(self) -> List[str]:
         return [str(Path(self.cfg["inbox"]).expanduser())]

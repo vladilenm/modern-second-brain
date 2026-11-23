@@ -12,8 +12,8 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import Iterator, List, Optional, Set, Tuple
 
-from .. import keychain
-from .base import ApiConnector, Batch, Record
+from .. import secret_store
+from .base import ApiConnector, Batch, Field, Record
 from .mailbox import AuthFailed, Fetched, Mailbox
 from .mailparse import MailMessage, parse, render_thread
 
@@ -28,6 +28,43 @@ class MailConnector(ApiConnector):
     host = ""
     gmail = False   # нужны ли расширения Gmail в FETCH
     auth_hint = ""  # что ещё проверить, если сервер не пускает
+    setup_fields = (Field("address", "Адрес почты", required=True),
+                    Field("password", "Пароль приложения", kind="secret", account_from="address",
+                          help="не пароль от почты, а отдельный пароль приложения"))
+    secret_service = KEYCHAIN_SERVICE
+
+    def _login(self):
+        """Вход в ящик с паролем из связки ключей; любая неудача — RuntimeError с понятной причиной."""
+        address = self.settings.get("address") or ""
+        if not address:
+            raise RuntimeError(f"{self.title}: в config.json не задан address")
+        try:
+            secret = secret_store.get(*self.secret_ref(self.setup_fields[1]), self.settings.get("password_command"))
+            return self.open_mailbox(address, secret)
+        except AuthFailed:
+            raise RuntimeError(f"{self.title}: почта не пускает — проверь пароль приложения{self.auth_hint}") from None
+        except RuntimeError as exc:
+            raise RuntimeError(f"{self.title}: {exc}") from None
+        except OSError as exc:
+            raise RuntimeError(f"{self.title}: нет связи ({exc})") from None
+        except imaplib.IMAP4.error as exc:  # сервер оборвал разговор ещё до входа
+            raise RuntimeError(f"{self.title}: ошибка IMAP ({exc})") from None
+
+    def detect(self) -> Optional[str]:
+        address = self.settings.get("address") or ""
+        if address and secret_store.exists(*self.secret_ref(self.setup_fields[1])):
+            return address
+        return None
+
+    def check(self) -> str:
+        box = self._login()
+        try:
+            folders = box.folders()
+        except (OSError, imaplib.IMAP4.error) as exc:
+            raise RuntimeError(f"{self.title}: ошибка IMAP ({exc})") from None
+        finally:
+            box.close()
+        return f"вход выполнен, папок: {len(folders)}"
 
     def open_mailbox(self, address: str, secret: str):
         """Вход в ящик; тесты подменяют этот метод поддельным ящиком."""
@@ -38,21 +75,7 @@ class MailConnector(ApiConnector):
         return datetime.now(timezone.utc) - timedelta(days=self.backfill_days)
 
     def fetch(self, cursor: Optional[str]) -> Iterator[Batch]:
-        address = self.settings.get("address") or ""
-        if not address:
-            raise RuntimeError(f"{self.title}: в config.json не задан address")
-        try:
-            secret = keychain.password(self.settings.get("keychain_service") or KEYCHAIN_SERVICE, address,
-                                       self.settings.get("password_command"))
-            box = self.open_mailbox(address, secret)
-        except AuthFailed:
-            raise RuntimeError(f"{self.title}: почта не пускает — проверь пароль приложения{self.auth_hint}") from None
-        except RuntimeError as exc:
-            raise RuntimeError(f"{self.title}: {exc}") from None
-        except OSError as exc:
-            raise RuntimeError(f"{self.title}: нет связи ({exc})") from None
-        except imaplib.IMAP4.error as exc:  # сервер оборвал разговор ещё до входа
-            raise RuntimeError(f"{self.title}: ошибка IMAP ({exc})") from None
+        box = self._login()
         try:
             yield from self._pass(box, cursor)
         except OSError as exc:  # нет сети, таймаут, обрыв соединения

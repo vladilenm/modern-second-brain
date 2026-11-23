@@ -4,7 +4,9 @@ from __future__ import annotations
 import copy
 import json
 import os
+import tempfile
 from pathlib import Path
+from typing import Dict
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -61,7 +63,7 @@ DEFAULTS = {
             # None — `gh auth token`; gh ищем и вне PATH, launchd его не передаёт.
             "token_command": None,
             "api_base": "https://api.github.com",
-            # Шаблоны owner/name, допускается *: ["vladilenm/tbank-*"].
+            # Шаблоны owner/name, допускается *: ["owner/tmp-*"].
             "exclude_repos": [],
         },
         "gmail": {
@@ -134,6 +136,47 @@ def _merge(base: dict, override: dict) -> dict:
 
 def config_path() -> Path:
     return Path(os.environ.get("BRAIN_CONFIG", ROOT / "config.json"))
+
+
+def read_raw() -> dict:
+    """config.json как есть, без умолчаний: то, что человек или мастер записали сами."""
+    path = config_path()
+    if not path.exists():
+        return {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("В config.json ожидается объект настроек.")
+    return data
+
+
+def write_raw(raw: dict) -> None:
+    """Атомарно и с правами 0600: в файле ключ модели, оборванная запись не должна портить настройки."""
+    path = config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix=f".{path.name}.", suffix=".tmp", delete=False) as out:
+            temporary = out.name
+            os.fchmod(out.fileno(), 0o600)
+            json.dump(raw, out, ensure_ascii=False, indent=2)
+            out.write("\n")
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary and os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def save_sources(changes: Dict[str, dict]) -> dict:
+    """Влить настройки источников в config.json; остальные ключи и поля не трогаются."""
+    raw = read_raw()
+    sources = raw.setdefault("sources", {})
+    for name, values in changes.items():
+        sources.setdefault(name, {}).update(values)
+    write_raw(raw)
+    return raw
 
 
 def load() -> dict:

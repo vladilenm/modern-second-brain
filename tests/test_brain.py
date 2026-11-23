@@ -950,6 +950,21 @@ class GitHubRepoTests(GitHubCase):
         self.assertIsInstance(ctx.exception, Fatal)  # обрыв связи не вина репозитория: без подсказки про exclude_repos
 
 
+class GitHubSetupTests(GitHubCase):
+    def test_detect_and_check_use_gh_token(self):
+        conn = GitHubConnector(self.cfg)
+        self.assertEqual(conn.detect(), "вход в gh выполнен")
+        self.assertEqual(conn.check(), "аккаунт vm")
+
+    def test_without_gh_login_check_explains(self):
+        self.cfg["sources"]["github"]["token_command"] = [sys.executable, "-c", "import sys; sys.exit(1)"]
+        conn = GitHubConnector(self.cfg)
+        self.assertIsNone(conn.detect())
+        with self.assertRaises(RuntimeError) as ctx:
+            conn.check()
+        self.assertIn("gh auth login", str(ctx.exception))
+
+
 class FakeLLM(http.server.BaseHTTPRequestHandler):
     requests = []
 
@@ -1475,6 +1490,20 @@ class YouTubeTests(unittest.TestCase):
         totals = sync_mod.sync(self.cfg, self.conn, only="youtube", log=lambda *_: None)
         self.assertEqual((totals["youtube"]["new"], totals["youtube"]["changed"]), (0, 0))
 
+    def test_check_finds_channels(self):
+        self.assertEqual(self.connector(self.cfg).check(), "каналы найдены: Мой канал")
+
+    def test_check_names_missing_channel(self):
+        self.cfg["sources"]["youtube"]["channels"] = ["@mine", "@nobody"]
+        with self.assertRaises(RuntimeError) as ctx:
+            self.connector(self.cfg).check()
+        self.assertIn("@nobody", str(ctx.exception))
+
+    def test_detect_sees_saved_key(self):
+        from unittest import mock
+        with mock.patch("brain.secret_store.exists", return_value=True):
+            self.assertEqual(self.connector(self.cfg).detect(), "ключ API сохранён")
+
 
 class FakeTelegram(http.server.BaseHTTPRequestHandler):
     """Фейковая страница t.me/s/<канал>: по три поста на страницу, ?before=N листает назад."""
@@ -1598,6 +1627,20 @@ class TelegramTests(unittest.TestCase):
         self.assertEqual((hit["source"], hit["location"]), ("telegram", "https://t.me/mine/7"))
         totals = sync_mod.sync(self.cfg, self.conn, only="telegram", log=lambda *_: None)
         self.assertEqual((totals["telegram"]["new"], totals["telegram"]["changed"]), (0, 0))
+
+    def test_check_finds_channel(self):
+        self.assertEqual(self.connector(self.cfg).check(), "каналы найдены: Мой канал")
+
+    def test_check_names_channel_without_posts(self):
+        self.cfg["sources"]["telegram"]["channels"] = ["mine", "other_channel"]
+        with self.assertRaises(RuntimeError) as ctx:
+            self.connector(self.cfg).check()
+        self.assertIn("@other_channel", str(ctx.exception))
+
+    def test_check_needs_channels(self):
+        self.cfg["sources"]["telegram"]["channels"] = []
+        with self.assertRaises(RuntimeError):
+            self.connector(self.cfg).check()
 
 
 class MCPTests(unittest.TestCase):

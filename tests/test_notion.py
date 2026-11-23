@@ -106,7 +106,7 @@ class NotionTests(unittest.TestCase):
         patcher = mock.patch.dict(connectors.ALL, {"notion": notion.NotionConnector})
         patcher.start()
         self.addCleanup(patcher.stop)
-        patcher = mock.patch("brain.keychain.password", return_value=TOKEN)
+        patcher = mock.patch("brain.secret_store.get", return_value=TOKEN)
         patcher.start()
         self.addCleanup(patcher.stop)
         patcher = mock.patch.object(notion, "REQUEST_INTERVAL", 0)
@@ -128,6 +128,22 @@ class NotionTests(unittest.TestCase):
 
     def error(self):
         return self.conn.execute("SELECT last_error FROM sync_state WHERE source='notion'").fetchone()[0]
+
+    def test_check_reports_token_owner(self):
+        self.routes["GET", "/v1/users/me"] = {"object": "user", "name": "Рабочий токен"}
+        self.assertEqual(notion.NotionConnector(self.cfg).check(), "токен работает: Рабочий токен")
+
+    def test_check_explains_expired_token(self):
+        self.routes["GET", "/v1/users/me"] = (401, {}, {"code": "unauthorized"})
+        with self.assertRaises(RuntimeError) as ctx:
+            notion.NotionConnector(self.cfg).check()
+        self.assertIn("HTTP 401", str(ctx.exception))
+
+    def test_detect_sees_saved_token(self):
+        with mock.patch("brain.secret_store.exists", return_value=True):
+            self.assertEqual(notion.NotionConnector(self.cfg).detect(), "токен сохранён")
+        with mock.patch("brain.secret_store.exists", return_value=False):
+            self.assertIsNone(notion.NotionConnector(self.cfg).detect())
 
     def test_import_record_properties_links_and_search(self):
         self.routes["POST", "/v1/search"] = listed([dict(page(), properties={

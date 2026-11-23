@@ -1,4 +1,15 @@
 #!/bin/sh
-# brain sync | search "запрос" | show ID | status | summarize | mcp
-DIR="$(cd "$(dirname "$0")/.." && pwd)"
-PYTHONPATH="$DIR${PYTHONPATH:+:$PYTHONPATH}" exec /usr/bin/python3 -m brain.cli "$@"
+# brain setup | sync | search "запрос" | recent | project | show ID | status | mcp — все команды: brain --help
+# Работает и через ссылку (~/.local/bin/brain): идём по ссылкам до настоящего файла. readlink -f в старом macOS нет.
+SELF="$0"
+while [ -L "$SELF" ]; do
+    LINK="$(readlink "$SELF")"
+    case "$LINK" in
+        /*) SELF="$LINK" ;;
+        *) SELF="$(dirname "$SELF")/$LINK" ;;
+    esac
+done
+DIR="$(cd "$(dirname "$SELF")/.." && pwd)"
+# Не `python3 -m brain.cli`: он ставит текущую папку первой в sys.path, и запуск из папки с другой копией
+# проекта взял бы её код и её config.json. Папка этой установки идёт раньше текущей.
+exec /usr/bin/python3 -c 'import sys; sys.path.insert(0, sys.argv.pop(1)); from brain.cli import main; sys.exit(main())' "$DIR" "$@"

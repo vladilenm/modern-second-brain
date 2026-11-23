@@ -1,6 +1,7 @@
 """Мастер настройки и всё, на чём он стоит: секреты, запись конфига, ввод, автозапуск, команды CLI."""
 from __future__ import annotations
 
+import curses
 import io
 import json
 import os
@@ -13,7 +14,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from brain import config, secret_store  # noqa: E402
+from brain import config, secret_store, ui  # noqa: E402
 from brain.connectors.base import Connector, Field  # noqa: E402
 from brain.connectors.chatgpt_export import ChatGPTExportConnector  # noqa: E402
 from brain.connectors.claude_code import ClaudeCodeConnector  # noqa: E402
@@ -130,6 +131,60 @@ class SetupContractTests(unittest.TestCase):
     def test_plain_connector_needs_no_setup(self):
         self.assertIsNone(Connector(self.cfg).detect())
         self.assertEqual(Connector(self.cfg).check(), "настройка не требуется")
+
+
+def text_ui(*lines, secrets=()):
+    answers = iter(secrets)
+    out = io.StringIO()
+    return ui.TextUi(io.StringIO("".join(line + "\n" for line in lines)), out, secret=lambda _: next(answers)), out
+
+
+class TextUiTests(unittest.TestCase):
+    def test_ask_keeps_default_on_enter(self):
+        term, _ = text_ui("", "новое")
+        self.assertEqual(term.ask("Адрес", default="a@b.c"), "a@b.c")
+        self.assertEqual(term.ask("Адрес", default="a@b.c"), "новое")
+
+    def test_confirm_understands_russian_and_english(self):
+        term, out = text_ui("", "н", "y", "может", "да")
+        self.assertTrue(term.confirm("Включить?", True))
+        self.assertFalse(term.confirm("Включить?", True))
+        self.assertTrue(term.confirm("Включить?", False))
+        self.assertTrue(term.confirm("Включить?", False))
+        self.assertIn("Ответь «д» или «н»", out.getvalue())
+
+    def test_choose_returns_index(self):
+        term, _ = text_ui("7", "2", "")
+        self.assertEqual(term.choose("Что?", ["а", "б", "в"]), 1)
+        self.assertEqual(term.choose("Что?", ["а", "б", "в"], default=2), 2)
+
+    def test_checklist_toggles_numbers_until_enter(self):
+        term, out = text_ui("2 3", "3", "")
+        chosen = term.checklist("Источники", [("A", "найдено"), ("B", ""), ("C", "")], {0})
+        self.assertEqual(chosen, [0, 1])
+        self.assertIn("[x]  1. A", out.getvalue())
+
+    def test_secret_goes_through_secret_reader(self):
+        term, out = text_ui(secrets=["  tok-1 "])
+        self.assertEqual(term.ask_secret("Токен"), "tok-1")
+        self.assertNotIn("tok-1", out.getvalue())
+
+    def test_end_of_input_stops(self):
+        term, _ = text_ui()
+        with self.assertRaises(EOFError):
+            term.ask("Адрес")
+
+
+class ChecklistTests(unittest.TestCase):
+    def test_keys_move_toggle_and_finish(self):
+        state = ui.Checklist([("A", ""), ("B", "x")], {0})
+        self.assertFalse(state.press(curses.KEY_DOWN))
+        self.assertFalse(state.press(ord(" ")))
+        self.assertEqual(state.checked, {0, 1})
+        self.assertFalse(state.press(curses.KEY_DOWN))  # по кругу наверх
+        self.assertEqual(state.pos, 0)
+        self.assertTrue(state.press(10))
+        self.assertEqual(state.lines()[0], "> [x] A")
 
 
 if __name__ == "__main__":

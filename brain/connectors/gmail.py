@@ -19,6 +19,8 @@ class GmailConnector(MailConnector):
     about = "переписка в Gmail"
     host = "imap.gmail.com"
     gmail = True
+    setup_help = ("Нужен пароль приложения: myaccount.google.com/apppasswords (сначала включи двухэтапную "
+                  "аутентификацию). В базу идут только треды с твоим письмом и помеченные письма за 2 года.")
 
     def candidates(self, box, pos: dict) -> Tuple[Set[str], dict]:
         folder = next((f for f in box.folders() if "\\All" in f.flags), None)

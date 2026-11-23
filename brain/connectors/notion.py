@@ -17,7 +17,7 @@ from typing import Iterator, Optional
 
 from .. import secret_store
 from ..redact import CARD_MASK, MASK
-from .base import ApiConnector, Batch, Record
+from .base import ApiConnector, Batch, Field, Record
 
 API_BASE = "https://api.notion.com/v1"
 API_VERSION = "2026-03-11"
@@ -183,15 +183,30 @@ class NotionConnector(ApiConnector):
     about = "страницы, заметки и записи баз в Notion"
     default_every_minutes = 15
     empty_hint = "Подключи API-токен Notion в связке ключей (README, раздел «Notion»)."
+    setup_fields = (Field("token", "API-токен Notion", kind="secret"),)
+    secret_service = "brain-notion"
+    setup_help = ("Создай персональный токен: notion.so/developers/tokens → новый токен с возможностью Notion API "
+                  "(на Free — владелец workspace). Код второго мозга только читает страницы. "
+                  "Платная подписка не нужна.")
 
-    def fetch(self, cursor: Optional[str]) -> Iterator[Batch]:
-        service = self.settings.get("keychain_service") or "brain-notion"
-        account = self.settings.get("keychain_account") or "default"
+    def _token(self) -> str:
+        service, account = self.secret_ref(self.setup_fields[0])
         try:
-            secret = secret_store.get(service, account)
+            return secret_store.get(service, account)
         except RuntimeError:
             raise RuntimeError("Notion: нет API-токена; создай его в Developer portal и сохрани командой `" +
                                secret_store.add_command(service, account) + "`") from None
+
+    def detect(self) -> Optional[str]:
+        return "токен сохранён" if secret_store.exists(*self.secret_ref(self.setup_fields[0])) else None
+
+    def check(self) -> str:
+        me = NotionAPI(self.settings.get("api_base") or API_BASE, self._token()).request("GET", "/users/me")
+        name = me.get("name") or (me.get("bot") or {}).get("workspace_name") or ""
+        return "токен работает" + (f": {name}" if name else "")
+
+    def fetch(self, cursor: Optional[str]) -> Iterator[Batch]:
+        secret = self._token()
         api = NotionAPI(self.settings.get("api_base") or API_BASE, secret)
         try:
             pos = json.loads(cursor) if cursor else {}

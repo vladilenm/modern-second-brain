@@ -1490,6 +1490,20 @@ class YouTubeTests(unittest.TestCase):
         totals = sync_mod.sync(self.cfg, self.conn, only="youtube", log=lambda *_: None)
         self.assertEqual((totals["youtube"]["new"], totals["youtube"]["changed"]), (0, 0))
 
+    def test_check_finds_channels(self):
+        self.assertEqual(self.connector(self.cfg).check(), "каналы найдены: Мой канал")
+
+    def test_check_names_missing_channel(self):
+        self.cfg["sources"]["youtube"]["channels"] = ["@mine", "@nobody"]
+        with self.assertRaises(RuntimeError) as ctx:
+            self.connector(self.cfg).check()
+        self.assertIn("@nobody", str(ctx.exception))
+
+    def test_detect_sees_saved_key(self):
+        from unittest import mock
+        with mock.patch("brain.secret_store.exists", return_value=True):
+            self.assertEqual(self.connector(self.cfg).detect(), "ключ API сохранён")
+
 
 class FakeTelegram(http.server.BaseHTTPRequestHandler):
     """Фейковая страница t.me/s/<канал>: по три поста на страницу, ?before=N листает назад."""

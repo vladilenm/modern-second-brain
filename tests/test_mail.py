@@ -39,6 +39,35 @@ class SecretReadTests(unittest.TestCase):
         self.assertIn("security add-generic-password -s brain-mail -a me@x.ru -w", str(ctx.exception))
 
 
+class MailSetupTests(unittest.TestCase):
+    def setUp(self):
+        self.cfg = make_cfg(Path(tempfile.mkdtemp()))
+        self.cfg["sources"]["gmail"].update(address="me@gmail.com",
+                                            password_command=[sys.executable, "-c", "print('app-pass')"])
+
+    def test_check_logs_in_and_closes(self):
+        box = mock.Mock()
+        box.folders.return_value = ["INBOX", "Sent"]
+        with mock.patch.object(GmailConnector, "open_mailbox", return_value=box) as opened:
+            self.assertEqual(GmailConnector(self.cfg).check(), "вход выполнен, папок: 2")
+        opened.assert_called_once_with("me@gmail.com", "app-pass")
+        box.close.assert_called_once()
+
+    def test_check_explains_wrong_password(self):
+        with mock.patch.object(GmailConnector, "open_mailbox", side_effect=AuthFailed("no")):
+            with self.assertRaises(RuntimeError) as ctx:
+                GmailConnector(self.cfg).check()
+        self.assertIn("пароль приложения", str(ctx.exception))
+
+    def test_secret_lives_under_address(self):
+        conn = GmailConnector(self.cfg)
+        self.assertEqual(conn.secret_ref(conn.setup_fields[1]), ("brain-mail", "me@gmail.com"))
+        with mock.patch("brain.secret_store.exists", return_value=True):
+            self.assertEqual(conn.detect(), "me@gmail.com")
+        self.assertIn("apppasswords", conn.setup_help)
+        self.assertIn("IMAP", YandexMailConnector(self.cfg).setup_help)
+
+
 class CardMaskTests(unittest.TestCase):
     def test_cards_masked_orders_and_phones_kept(self):
         text = ("Карта 4111 1111 1111 1111, вторая 5500-0000-0000-0004, третья 4111111111111111. "

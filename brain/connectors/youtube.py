@@ -20,7 +20,7 @@ from typing import Iterator, List, Optional, Tuple
 
 from .. import secret_store
 from ..timeutil import parse, to_iso
-from .base import ApiConnector, Batch, Record, clip
+from .base import ApiConnector, Batch, Field, Record, clip
 
 API_BASE = "https://www.googleapis.com/youtube/v3"
 BATCH = 20
@@ -243,18 +243,43 @@ class YouTubeConnector(ApiConnector):
     default_every_minutes = 360
     empty_hint = "Подключи ключ YouTube Data API и укажи каналы (README, раздел «YouTube»)."
     now: Optional[datetime] = None  # тесты фиксируют «сейчас»
+    setup_fields = (Field("channels", "Свои каналы", kind="list", required=True,
+                          help="@handle, ссылка на канал или UC…, несколько — через запятую"),
+                    Field("api_key", "Ключ YouTube Data API", kind="secret"))
+    secret_service = "brain-youtube"
+    setup_help = ("Google Cloud Console → проект → включи «YouTube Data API v3» → «Учётные данные» → "
+                  "создай ключ API и ограничь его этим API. Ключ даёт доступ только к публичным данным.")
 
-    def fetch(self, cursor: Optional[str]) -> Iterator[Batch]:
-        channels = [c for c in self.settings.get("channels") or [] if str(c).strip()]
-        if not channels:
-            raise RuntimeError("YouTube: не указаны каналы — добавь sources.youtube.channels в config.json")
-        service = self.settings.get("keychain_service") or "brain-youtube"
-        account = self.settings.get("keychain_account") or "default"
+    def _key(self) -> str:
+        service, account = self.secret_ref(self.setup_fields[1])
         try:
-            key = secret_store.get(service, account, self.settings.get("key_command"))
+            return secret_store.get(service, account, self.settings.get("key_command"))
         except RuntimeError:
             raise RuntimeError("YouTube: нет ключа API; создай его в Google Cloud и сохрани командой `"
                                + secret_store.add_command(service, account) + "`") from None
+
+    def _channels(self) -> List[str]:
+        channels = [str(c) for c in self.settings.get("channels") or [] if str(c).strip()]
+        if not channels:
+            raise RuntimeError("YouTube: не указаны каналы — добавь sources.youtube.channels в config.json")
+        return channels
+
+    def detect(self) -> Optional[str]:
+        return "ключ API сохранён" if secret_store.exists(*self.secret_ref(self.setup_fields[1])) else None
+
+    def check(self) -> str:
+        api = YouTubeAPI(self.settings.get("api_base") or API_BASE, self._key())
+        found, missing = [], []
+        for spec in self._channels():
+            channel = api.channel(spec)
+            (found if channel else missing).append(channel["title"] if channel else spec)
+        if missing:
+            raise RuntimeError("YouTube: не найдены каналы " + ", ".join(missing))
+        return "каналы найдены: " + ", ".join(found)
+
+    def fetch(self, cursor: Optional[str]) -> Iterator[Batch]:
+        channels = self._channels()
+        key = self._key()
         api = YouTubeAPI(self.settings.get("api_base") or API_BASE, key)
         try:
             pos = json.loads(cursor) if cursor else {}

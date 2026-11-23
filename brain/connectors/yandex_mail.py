@@ -32,6 +32,9 @@ class YandexMailConnector(MailConnector):
     about = "переписка в Яндекс.Почте"
     host = "imap.yandex.ru"
     auth_hint = " и включён ли IMAP в настройках почты («Почтовые программы»)"
+    setup_help = ("Нужен пароль приложения: Яндекс ID → «Безопасность» → «Пароли приложений» → «Почта». "
+                  "В настройках почты → «Почтовые программы» включи IMAP и пароли приложений. "
+                  "В базу идут только треды с твоим письмом и помеченные письма за 2 года.")
     index = None
 
     def candidates(self, box, pos: dict) -> Tuple[Set[str], dict]:

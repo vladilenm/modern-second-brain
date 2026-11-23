@@ -10,4 +10,6 @@ while [ -L "$SELF" ]; do
     esac
 done
 DIR="$(cd "$(dirname "$SELF")/.." && pwd)"
-PYTHONPATH="$DIR${PYTHONPATH:+:$PYTHONPATH}" exec /usr/bin/python3 -m brain.cli "$@"
+# Не `python3 -m brain.cli`: он ставит текущую папку первой в sys.path, и запуск из папки с другой копией
+# проекта взял бы её код и её config.json. Папка этой установки идёт раньше текущей.
+exec /usr/bin/python3 -c 'import sys; sys.path.insert(0, sys.argv.pop(1)); from brain.cli import main; sys.exit(main())' "$DIR" "$@"

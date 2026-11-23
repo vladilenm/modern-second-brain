@@ -95,6 +95,18 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("setup", result.stdout)
 
+    def test_brain_ignores_other_copy_in_current_folder(self):
+        """Запуск из папки с другой копией проекта не должен брать её код и её config.json."""
+        tmp = Path(tempfile.mkdtemp())
+        (tmp / "brain").mkdir()
+        (tmp / "brain" / "__init__.py").write_text("")
+        (tmp / "brain" / "cli.py").write_text("print('ЧУЖАЯ КОПИЯ')\ndef main():\n    return 0\n")
+        result = subprocess.run([str(ROOT / "bin" / "brain"), "--help"], capture_output=True, text=True, timeout=30,
+                                cwd=tmp)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn("ЧУЖАЯ КОПИЯ", result.stdout)
+        self.assertIn("setup", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -67,6 +67,23 @@ class InstallTests(unittest.TestCase):
             subprocess.run(["shellcheck", "-s", "sh", str(ROOT / "install.sh")], check=True)
 
 
+class RepoHygieneTests(unittest.TestCase):
+    """В том, что ставится людям, нет путей и меток автора. Прежнюю метку знает только autostart.py — чтобы снять её."""
+    PATTERNS = ("/Users/vladilen", "com.vladilen")
+
+    def test_no_personal_paths(self):
+        files = subprocess.run(["git", "-C", str(ROOT), "ls-files", "bin", "brain", "menubar", "install.sh",
+                                "config.example.json", "README.md", "docs/sources.md", "docs/development.md"],
+                               capture_output=True, text=True, check=True).stdout.split()
+        found = []
+        for name in files:
+            if name in ("brain/autostart.py", "brain/web/graph-vendor.js"):
+                continue
+            text = (ROOT / name).read_text(encoding="utf-8", errors="ignore")
+            found += [f"{name}: {p}" for p in self.PATTERNS if p in text]
+        self.assertEqual(found, [])
+
+
 class LauncherTests(unittest.TestCase):
     def test_brain_works_through_symlink(self):
         tmp = Path(tempfile.mkdtemp())

@@ -8,6 +8,8 @@ APP="$HOME/Applications/BrainBar.app"
 rm -rf "$BUILD"
 mkdir -p "$BUILD/Contents/MacOS"
 cp Info.plist "$BUILD/Contents/Info.plist"
+# Путь к проекту — в Info.plist: значок работает, куда бы ни поставили второй мозг.
+/usr/libexec/PlistBuddy -c "Add :BrainDir string $(cd .. && pwd)" "$BUILD/Contents/Info.plist"
 xcrun swiftc -O -swift-version 5 -parse-as-library -module-cache-path "$PWD/build/module-cache" \
     -o "$BUILD/Contents/MacOS/BrainBar" BrainBar.swift MenuViews.swift ModelSettings.swift
 codesign --force --sign - "$BUILD"

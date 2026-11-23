@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key>
-    <string>com.vladilen.brainbar</string>
+    <string>local.brain.brainbar</string>
     <key>CFBundleName</key>
     <string>BrainBar</string>
     <key>CFBundleDisplayName</key>

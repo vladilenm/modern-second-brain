@@ -63,7 +63,7 @@ DEFAULTS = {
             # None — `gh auth token`; gh ищем и вне PATH, launchd его не передаёт.
             "token_command": None,
             "api_base": "https://api.github.com",
-            # Шаблоны owner/name, допускается *: ["vladilenm/tbank-*"].
+            # Шаблоны owner/name, допускается *: ["owner/tmp-*"].
             "exclude_repos": [],
         },
         "gmail": {

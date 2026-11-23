@@ -13,7 +13,7 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from brain import secret_store  # noqa: E402
+from brain import config, secret_store  # noqa: E402
 
 
 def fake_command(tmp: Path, body: str) -> Path:
@@ -55,6 +55,36 @@ class SecretStoreTests(unittest.TestCase):
         with self.assertRaises(RuntimeError) as ctx:
             secret_store.get("brain-mail", "me@x.ru", [sys.executable, "-c", "raise SystemExit(44)"])
         self.assertIn("security add-generic-password -s brain-mail -a me@x.ru -w", str(ctx.exception))
+
+
+class ConfigWriteTests(unittest.TestCase):
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.path = self.dir / "config.json"
+        env = mock.patch.dict(os.environ, {"BRAIN_CONFIG": str(self.path)})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def test_save_sources_keeps_everything_else(self):
+        self.path.write_text(json.dumps({"llm": {"model": "m"},
+                                         "sources": {"gmail": {"address": "a@b.c", "every_minutes": 5}}}))
+        config.save_sources({"gmail": {"enabled": True}, "telegram": {"channels": ["x"], "enabled": True}})
+        stored = json.loads(self.path.read_text())
+        self.assertEqual(stored["llm"], {"model": "m"})
+        self.assertEqual(stored["sources"]["gmail"], {"address": "a@b.c", "every_minutes": 5, "enabled": True})
+        self.assertEqual(stored["sources"]["telegram"], {"channels": ["x"], "enabled": True})
+        self.assertEqual(self.path.stat().st_mode & 0o777, 0o600)
+        self.assertEqual([p.name for p in self.dir.iterdir()], ["config.json"])  # временных файлов не осталось
+
+    def test_missing_file_is_created_and_read_raw_is_empty_before(self):
+        self.assertEqual(config.read_raw(), {})
+        config.save_sources({"kimi": {"enabled": False}})
+        self.assertEqual(config.read_raw(), {"sources": {"kimi": {"enabled": False}}})
+
+    def test_read_raw_rejects_non_object(self):
+        self.path.write_text("[]")
+        with self.assertRaises(ValueError):
+            config.read_raw()
 
 
 if __name__ == "__main__":

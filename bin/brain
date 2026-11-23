@@ -1,4 +1,13 @@
 #!/bin/sh
-# brain sync | search "запрос" | show ID | status | summarize | mcp
-DIR="$(cd "$(dirname "$0")/.." && pwd)"
+# brain setup | sync | search "запрос" | recent | project | show ID | status | mcp — все команды: brain --help
+# Работает и через ссылку (~/.local/bin/brain): идём по ссылкам до настоящего файла. readlink -f в старом macOS нет.
+SELF="$0"
+while [ -L "$SELF" ]; do
+    LINK="$(readlink "$SELF")"
+    case "$LINK" in
+        /*) SELF="$LINK" ;;
+        *) SELF="$(dirname "$SELF")/$LINK" ;;
+    esac
+done
+DIR="$(cd "$(dirname "$SELF")/.." && pwd)"
 PYTHONPATH="$DIR${PYTHONPATH:+:$PYTHONPATH}" exec /usr/bin/python3 -m brain.cli "$@"
